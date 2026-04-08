@@ -1,1111 +1,904 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  BookOpen, 
-  PenTool, 
-  Headphones, 
-  Mic2, 
-  LayoutDashboard, 
-  Settings, 
-  ChevronRight, 
-  CheckCircle2, 
-  AlertCircle,
-  Loader2,
-  ArrowLeft,
-  Trophy,
-  Calendar,
-  Target,
-  Home,
-  ClipboardList,
-  User
-} from 'lucide-react';
-import { UserData, DiagnosticQuestion, UserStats, StudyPlan } from './types';
-import { 
-  generateDiagnosticQuestions, 
-  evaluateDiagnostic, 
-  generateStudyPlan,
-  generateModuleContent,
-  getAIFeedback
-} from './lib/gemini';
-
-type Screen = 'API_KEY' | 'ONBOARDING' | 'DASHBOARD' | 'DIAGNOSTIC' | 'DIAGNOSTIC_RESULTS' | 'STUDY' | 'SETTINGS';
-
-const LEVEL_LABELS: Record<number, string> = {
-  0: "Nunca estudei",
-  1: "Iniciante",
-  2: "Básico",
-  3: "Intermediário",
-  4: "Avançado",
-  5: "Fluente"
-};
-
-const getLevelLabel = (level: number = 0) => LEVEL_LABELS[Math.round(level)] || LEVEL_LABELS[0];
-
-export default function App() {
-  const [screen, setScreen] = useState<Screen>('API_KEY');
-  const [activeTab, setActiveTab] = useState<string>('DASHBOARD');
-  const [history, setHistory] = useState<Screen[]>([]);
-  const [userData, setUserData] = useState<UserData>({
-    sessionsCompleted: 0,
-    wordsLearned: 0,
-    diagnosticCompleted: false,
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [fatalError, setFatalError] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState('');
-  const [diagnosticQuestions, setDiagnosticQuestions] = useState<DiagnosticQuestion[]>([]);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<any[]>([]);
-  const [currentModule, setCurrentModule] = useState<string | null>(null);
-  const [moduleContent, setModuleContent] = useState<any>(null);
-  const [feedback, setFeedback] = useState<any>(null);
-
-  // Global Error Handling
-  useEffect(() => {
-    const handleError = (event: ErrorEvent | PromiseRejectionEvent) => {
-      const message = 'reason' in event ? event.reason?.message : event.message;
-      console.error("Lumina Critical Error:", message, event);
-      setFatalError(message || "Ocorreu um erro inesperado no aplicativo.");
-    };
-    window.addEventListener('error', handleError);
-    window.addEventListener('unhandledrejection', handleError);
-    return () => {
-      window.removeEventListener('error', handleError);
-      window.removeEventListener('unhandledrejection', handleError);
-    };
-  }, []);
-
-  const showScreen = useCallback((newScreen: Screen) => {
-    console.log(`Navigating to: ${newScreen}`);
-    setHistory(prev => [...prev, screen]);
-    setScreen(newScreen);
-    if (['DASHBOARD', 'DIAGNOSTIC', 'SETTINGS'].includes(newScreen)) {
-      setActiveTab(newScreen);
-    }
-  }, [screen]);
-
-  const goBack = useCallback(() => {
-    if (history.length > 0) {
-      const newHistory = [...history];
-      const prev = newHistory.pop()!;
-      console.log(`Going back to: ${prev}`);
-      setHistory(newHistory);
-      setScreen(prev);
-    }
-  }, [history]);
-
-  // Initialization
-  useEffect(() => {
-    try {
-      const savedData = localStorage.getItem('lumina_user_data');
-      if (savedData) {
-        const parsed = JSON.parse(savedData);
-        setUserData(parsed);
-        
-        // Determine initial screen
-        if (parsed.apiKey || process.env.GEMINI_API_KEY) {
-          if (parsed.name) {
-            setScreen('DASHBOARD');
-          } else {
-            setScreen('ONBOARDING');
-          }
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumina English - Aprenda Inglês com IA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F8F9FA;
+            color: #1A1A1A;
         }
-      }
-    } catch (err) {
-      console.error("Error loading saved data:", err);
-    }
-  }, []);
-
-  const saveUserData = (data: Partial<UserData>) => {
-    setUserData(prev => {
-      const newData = { ...prev, ...data };
-      localStorage.setItem('lumina_user_data', JSON.stringify(newData));
-      return newData;
-    });
-  };
-
-  const handleApiKeySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (apiKey.trim()) {
-      saveUserData({ apiKey: apiKey.trim() });
-      showScreen('ONBOARDING');
-    }
-  };
-
-  const handleOnboardingSubmit = async (onboardingData: { name: string; goal: any; days: number; minutes: number }) => {
-    setLoading(true);
-    setError(null);
-    try {
-      console.log("Generating initial study plan...");
-      const schedule = await generateStudyPlan(
-        onboardingData.goal, 
-        onboardingData.days, 
-        onboardingData.minutes, 
-        { overall: 1 }, 
-        userData.apiKey
-      );
-      
-      saveUserData({ 
-        name: onboardingData.name,
-        plan: { 
-          goal: onboardingData.goal, 
-          daysPerWeek: onboardingData.days, 
-          minutesPerDay: onboardingData.minutes, 
-          schedule 
-        } 
-      });
-      
-      showScreen('DASHBOARD');
-    } catch (err: any) {
-      console.error("Onboarding Error:", err);
-      setError("Erro ao salvar perfil. Verifique sua conexão e chave API.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startDiagnostic = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      console.log("Loading diagnostic questions...");
-      const questions = await generateDiagnosticQuestions(userData.apiKey);
-      setDiagnosticQuestions(questions);
-      setCurrentQuestionIndex(0);
-      setAnswers([]);
-      showScreen('DIAGNOSTIC');
-    } catch (err: any) {
-      console.error("Diagnostic Load Error:", err);
-      setError("Erro ao carregar diagnóstico. Verifique sua chave API.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const submitDiagnosticAnswer = async (answer: any) => {
-    try {
-      const question = diagnosticQuestions[currentQuestionIndex];
-      const isCorrect = answer === question.correctAnswer;
-      const newAnswers = [...answers, { 
-        questionId: question.id, 
-        skill: question.skill, 
-        answer, 
-        isCorrect 
-      }];
-      setAnswers(newAnswers);
-
-      if (currentQuestionIndex < diagnosticQuestions.length - 1) {
-        setCurrentQuestionIndex(currentQuestionIndex + 1);
-      } else {
-        setLoading(true);
-        console.log("Evaluating diagnostic...");
-        const stats = await evaluateDiagnostic(newAnswers, userData.apiKey);
-        saveUserData({ stats });
-        showScreen('DIAGNOSTIC_RESULTS');
-      }
-    } catch (err: any) {
-      console.error("Diagnostic Submission Error:", err);
-      setError("Erro ao processar resposta.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startModule = async (type: string) => {
-    setLoading(true);
-    setCurrentModule(type);
-    setActiveTab(type);
-    setFeedback(null);
-    try {
-      console.log(`Loading module: ${type}`);
-      const content = await generateModuleContent(
-        type, 
-        userData.stats?.overall || 1, 
-        userData.plan?.goal || 'fluency', 
-        userData.apiKey
-      );
-      setModuleContent(content);
-      showScreen('STUDY');
-    } catch (err: any) {
-      console.error("Module Load Error:", err);
-      setError("Erro ao carregar módulo.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const submitModuleResponse = async (response: string) => {
-    setLoading(true);
-    try {
-      console.log("Getting AI feedback...");
-      const aiFeedback = await getAIFeedback(currentModule!, response, moduleContent, userData.apiKey);
-      setFeedback(aiFeedback);
-      if (aiFeedback.score >= 7) {
-        saveUserData({ 
-          sessionsCompleted: (userData.sessionsCompleted || 0) + 1,
-          wordsLearned: (userData.wordsLearned || 0) + (moduleContent.vocabulary?.length || 5)
-        });
-      }
-    } catch (err: any) {
-      console.error("Feedback Error:", err);
-      setError("Erro ao obter feedback da IA.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (fatalError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-red-50">
-        <div className="bg-white p-8 rounded-[40px] shadow-2xl max-w-md text-center border border-red-100">
-          <AlertCircle size={64} className="text-red-500 mx-auto mb-6" />
-          <h2 className="text-3xl font-black mb-4">Ops! Algo deu errado.</h2>
-          <p className="text-gray-600 mb-8 leading-relaxed">{fatalError}</p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full bg-orange-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-orange-200 hover:bg-orange-600 transition-all"
-          >
-            Recarregar Aplicativo
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-orange-100 flex flex-col md:flex-row">
-      {/* Sidebar / Bottom Tab Bar */}
-      {userData.name && screen !== 'API_KEY' && screen !== 'ONBOARDING' && (
-        <nav className="fixed bottom-0 left-0 right-0 z-[60] bg-white border-t border-gray-100 md:relative md:bottom-auto md:left-auto md:right-auto md:w-64 md:min-h-screen md:border-t-0 md:border-r md:flex md:flex-col">
-          <div className="hidden md:flex items-center gap-2 px-6 py-8">
-            <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-200">
-              <BookOpen size={24} />
+        .selection-orange::selection {
+            background-color: #ffedd5;
+        }
+        .animate-bounce-slow {
+            animation: bounce 2s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(-5%); animation-timing-function: cubic-bezier(0.8, 0, 1, 1); }
+            50% { transform: translateY(0); animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
+        }
+        .screen {
+            display: none;
+        }
+        .screen.active {
+            display: block;
+        }
+        .loader-spin {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #e5e7eb;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #d1d5db;
+        }
+    </style>
+</head>
+<body class="selection-orange">
+    <div id="app" class="min-h-screen flex flex-col md:flex-row">
+        <!-- Sidebar / Bottom Tab Bar (Injected by JS) -->
+        <nav id="sidebar" class="hidden fixed bottom-0 left-0 right-0 z-[60] bg-white border-t border-gray-100 md:relative md:bottom-auto md:left-auto md:right-auto md:w-64 md:min-h-screen md:border-t-0 md:border-r md:flex md:flex-col">
+            <div class="hidden md:flex items-center gap-2 px-6 py-8">
+                <div class="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-200">
+                    <i data-lucide="book-open" size="24"></i>
+                </div>
+                <h1 class="text-xl font-bold tracking-tight">Lumina</h1>
             </div>
-            <h1 className="text-xl font-bold tracking-tight">Lumina</h1>
-          </div>
 
-          <div className="flex md:flex-col justify-around md:justify-start px-2 py-2 md:px-4 md:gap-1 overflow-x-auto md:overflow-x-visible">
-            {[
-              { id: 'DASHBOARD', label: 'Dashboard', icon: Home },
-              { id: 'DIAGNOSTIC', label: 'Diagnóstico', icon: ClipboardList, action: startDiagnostic },
-              { id: 'PLAN', label: 'Plano', icon: Calendar, action: () => { setActiveTab('PLAN'); showScreen('DASHBOARD'); } },
-              { id: 'reading', label: 'Leitura', icon: BookOpen, action: () => startModule('reading') },
-              { id: 'writing', label: 'Escrita', icon: PenTool, action: () => startModule('writing') },
-              { id: 'listening', label: 'Audição', icon: Headphones, action: () => startModule('listening') },
-              { id: 'speaking', label: 'Fala', icon: Mic2, action: () => startModule('speaking') },
-            ].map((item) => {
-              const isActive = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => item.action ? item.action() : showScreen(item.id as Screen)}
-                  className={`flex flex-col md:flex-row items-center gap-1 md:gap-3 px-3 py-2 md:px-4 md:py-3 rounded-xl transition-all ${
-                    isActive 
-                      ? 'text-orange-500 bg-orange-50 md:bg-orange-500 md:text-white shadow-sm md:shadow-orange-200' 
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  <item.icon size={20} className={isActive ? '' : 'md:text-gray-400'} />
-                  <span className="text-[10px] md:text-sm font-bold whitespace-nowrap">{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+            <div id="nav-items" class="flex md:flex-col justify-around md:justify-start px-2 py-2 md:px-4 md:gap-1 overflow-x-auto md:overflow-x-visible">
+                <!-- Nav items injected here -->
+            </div>
         </nav>
-      )}
 
-      <div className="flex-1 flex flex-col min-h-0">
-        <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {userData.name && screen !== 'DASHBOARD' && (
-              <button onClick={goBack} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
-                <ArrowLeft size={20} />
-              </button>
-            )}
-            <div className="flex items-center gap-2 md:hidden">
-              <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center text-white">
-                <BookOpen size={18} />
-              </div>
-              <h1 className="text-lg font-bold tracking-tight">Lumina</h1>
-            </div>
-            <h2 className="hidden md:block text-lg font-bold text-gray-800">
-              {screen === 'DASHBOARD' ? 'Dashboard' : 
-               screen === 'SETTINGS' ? 'Configurações' : 
-               screen === 'STUDY' ? 'Estudo' : 
-               screen === 'DIAGNOSTIC' ? 'Diagnóstico' : ''}
-            </h2>
-          </div>
-          
-          {userData.name && (
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={() => showScreen('SETTINGS')} 
-                className={`p-2 rounded-full transition-colors ${screen === 'SETTINGS' ? 'bg-orange-100 text-orange-500' : 'hover:bg-gray-100 text-gray-400'}`}
-              >
-                <Settings size={20} />
-              </button>
-            </div>
-          )}
-        </header>
-
-        <main className="flex-1 overflow-y-auto pb-24 md:pb-12 relative">
-          {loading && screen !== 'DIAGNOSTIC' && screen !== 'STUDY' && (
-            <div className="absolute inset-0 z-50 bg-white/50 backdrop-blur-sm flex items-center justify-center">
-              <div className="bg-white p-8 rounded-3xl shadow-xl flex flex-col items-center gap-4">
-                <Loader2 className="animate-spin text-orange-500" size={48} />
-                <p className="font-bold text-gray-600">Carregando...</p>
-              </div>
-            </div>
-          )}
-          <div className="max-w-4xl mx-auto p-5 md:p-10">
-        <AnimatePresence mode="wait">
-          {screen === 'API_KEY' && !process.env.GEMINI_API_KEY && !userData.apiKey && (
-            <motion.div 
-              key="api-key"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="max-w-md mx-auto bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50"
-            >
-              <h2 className="text-3xl font-black mb-2">Bem-vindo ao Lumina</h2>
-              <p className="text-gray-500 mb-8">Para começar, insira sua chave da API do Gemini. Seus dados são salvos localmente.</p>
-              <form onSubmit={handleApiKeySubmit} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-bold mb-2 uppercase tracking-widest text-gray-400">Chave API Gemini</label>
-                  <input 
-                    type="password" 
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Insira sua chave aqui..."
-                    className="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all bg-gray-50"
-                  />
-                </div>
-                <button 
-                  type="submit"
-                  className="w-full bg-orange-500 text-white font-bold py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95"
-                >
-                  Começar Jornada
-                </button>
-              </form>
-              <p className="mt-8 text-xs text-center text-gray-400">
-                Não tem uma chave? <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-orange-500 underline font-bold">Obtenha aqui gratuitamente</a>
-              </p>
-            </motion.div>
-          )}
-
-          {screen === 'ONBOARDING' && (
-            <motion.div 
-              key="onboarding"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="max-w-2xl mx-auto space-y-8"
-            >
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <h2 className="text-3xl font-black mb-8">Configure seu Perfil</h2>
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const formData = new FormData(e.currentTarget);
-                  handleOnboardingSubmit({
-                    name: formData.get('name') as string,
-                    days: Number(formData.get('days')),
-                    minutes: Number(formData.get('minutes')),
-                    goal: formData.get('goal') as any
-                  });
-                }} className="space-y-8">
-                  <div>
-                    <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Seu Nome</label>
-                    <input 
-                      name="name" 
-                      required
-                      defaultValue={userData.name}
-                      placeholder="Como podemos te chamar?"
-                      className="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div>
-                      <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Dias por semana</label>
-                      <select name="days" className="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                        <option value="3">3 dias</option>
-                        <option value="5">5 dias</option>
-                        <option value="7">Todos os dias</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Minutos por dia</label>
-                      <select name="minutes" className="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                        <option value="15">15 minutos</option>
-                        <option value="30">30 minutos</option>
-                        <option value="60">1 hora</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Objetivo Principal</label>
-                    <div className="grid grid-cols-2 gap-4">
-                      {[
-                        { id: 'travel', label: 'Viagem', icon: '✈️' },
-                        { id: 'fluency', label: 'Fluência', icon: '🗣️' },
-                        { id: 'work', label: 'Trabalho', icon: '💼' },
-                        { id: 'content', label: 'Conteúdo', icon: '📺' }
-                      ].map((g) => (
-                        <label key={g.id} className="relative cursor-pointer group">
-                          <input type="radio" name="goal" value={g.id} defaultChecked={g.id === 'fluency'} className="peer sr-only" />
-                          <div className="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
-                            <span className="text-3xl mb-2 block">{g.icon}</span>
-                            <span className="text-sm font-bold">{g.label}</span>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <button 
-                    type="submit"
-                    disabled={loading}
-                    className="w-full bg-orange-500 text-white font-bold py-5 rounded-3xl hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-3 text-xl disabled:opacity-50"
-                  >
-                    {loading ? <Loader2 className="animate-spin" /> : "Salvar e Continuar"}
-                  </button>
-                </form>
-              </div>
-            </motion.div>
-          )}
-
-          {screen === 'DASHBOARD' && (
-            <motion.div 
-              key="dashboard"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="space-y-8"
-            >
-              {!userData.diagnosticCompleted ? (
-                // PRE-DIAGNOSTIC DASHBOARD
-                <div className="max-w-2xl mx-auto space-y-8">
-                  <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
-                    <div className="w-20 h-20 bg-orange-100 text-orange-500 rounded-3xl flex items-center justify-center mx-auto mb-6">
-                      <Trophy size={40} />
-                    </div>
-                    <h2 className="text-4xl font-black mb-4">Olá, {userData.name}! 👋</h2>
-                    <p className="text-gray-500 text-lg mb-8 leading-relaxed">
-                      Estamos prontos para começar sua jornada rumo à <strong>{userData.plan?.goal === 'travel' ? 'viagem dos sonhos' : userData.plan?.goal === 'work' ? 'carreira internacional' : 'fluência total'}</strong>.
-                    </p>
-                    
-                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100 mb-10 text-left flex items-start gap-4">
-                      <div className="p-3 bg-white rounded-2xl shadow-sm">
-                        <Calendar className="text-orange-500" />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-gray-800">Seu Compromisso</h4>
-                        <p className="text-gray-500 text-sm">{userData.plan?.daysPerWeek} dias por semana • {userData.plan?.minutesPerDay} minutos por dia</p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4">
-                      <button 
-                        onClick={startDiagnostic}
-                        disabled={loading}
-                        className="w-full bg-orange-500 text-white font-bold py-5 rounded-3xl hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-3 text-xl disabled:opacity-50"
-                      >
-                        {loading ? <Loader2 className="animate-spin" /> : (
-                          <>
-                            Iniciar Diagnóstico
-                            <ChevronRight size={24} />
-                          </>
-                        )}
-                      </button>
-                      <button 
-                        onClick={() => showScreen('ONBOARDING')}
-                        className="text-gray-400 font-medium hover:text-gray-600 transition-colors"
-                      >
-                        Editar Perfil
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                // POST-DIAGNOSTIC DASHBOARD
-                <div className="flex flex-col md:flex-row gap-8">
-                  <div className="flex-1 space-y-8">
-                    <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                      <h2 className="text-2xl font-black mb-8 flex items-center gap-3">
-                        <Calendar size={28} className="text-orange-500" />
-                        Atividade de Hoje
-                      </h2>
-                      <div className="bg-orange-50 border border-orange-100 p-5 rounded-3xl mb-8">
-                        <p className="text-orange-800 font-medium mb-6 text-lg">
-                          Recomendamos focar em <span className="font-bold underline">{(userData.stats?.weaknesses?.[0] || 'Escrita').toLowerCase()}</span> hoje para equilibrar suas habilidades.
-                        </p>
-                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                          {[
-                            { id: 'reading', label: 'Leitura', icon: BookOpen, color: 'text-blue-500' },
-                            { id: 'writing', label: 'Escrita', icon: PenTool, color: 'text-purple-500' },
-                            { id: 'listening', label: 'Audição', icon: Headphones, color: 'text-green-500' },
-                            { id: 'speaking', label: 'Fala', icon: Mic2, color: 'text-red-500' }
-                          ].map((mod) => (
-                            <button 
-                              key={mod.id}
-                              onClick={() => startModule(mod.id)}
-                              className="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm"
-                            >
-                              <mod.icon size={28} className={`${mod.color} mx-auto mb-3 group-hover:scale-110 transition-transform`} />
-                              <span className="text-xs font-bold uppercase tracking-widest">{mod.label}</span>
-                            </button>
-                          ))}
+        <div class="flex-1 flex flex-col min-h-0">
+            <!-- Header -->
+            <header id="main-header" class="hidden sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <button id="back-button" class="hidden p-2 hover:bg-gray-100 rounded-full transition-colors">
+                        <i data-lucide="arrow-left" size="20"></i>
+                    </button>
+                    <div class="flex items-center gap-2 md:hidden">
+                        <div class="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center text-white">
+                            <i data-lucide="book-open" size="18"></i>
                         </div>
-                      </div>
+                        <h1 class="text-lg font-bold tracking-tight">Lumina</h1>
                     </div>
-
-                    <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                      <h3 className="font-black text-xl mb-6">Seu Plano Semanal</h3>
-                      <div className="space-y-4">
-                        {userData.plan?.schedule && Object.entries(userData.plan.schedule).map(([day, activity]) => (
-                          <div key={day} className="flex items-center gap-6 p-4 rounded-2xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
-                            <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center text-gray-400 font-black text-xs uppercase">
-                              {day.substring(0, 3)}
-                            </div>
-                            <p className="text-gray-600 font-medium">{activity as string}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="w-full md:w-80 space-y-8">
-                    <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
-                      <div className="w-28 h-28 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-white shadow-inner">
-                        <span className="text-xl font-black text-orange-500 leading-tight px-2">{getLevelLabel(userData.stats?.overall)}</span>
-                      </div>
-                      <h3 className="font-black text-xl mb-1">Nível Geral</h3>
-                      <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-8">Escala Descritiva</p>
-                      
-                      <div className="space-y-6 text-left">
-                        {[
-                          { id: 'reading', label: 'Leitura' },
-                          { id: 'writing', label: 'Escrita' },
-                          { id: 'listening', label: 'Audição' },
-                          { id: 'speaking', label: 'Fala' }
-                        ].map((skill) => (
-                          <div key={skill.id} className="space-y-2">
-                            <div className="flex justify-between items-end">
-                              <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{skill.label}</span>
-                              <span className="text-[10px] font-black text-orange-500">{getLevelLabel((userData.stats as any)?.[skill.id])}</span>
-                            </div>
-                            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-orange-500" 
-                                style={{ width: `${(((userData.stats as any)?.[skill.id] || 0) / 5) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                      <h3 className="font-black mb-6 flex items-center gap-2">
-                        <AlertCircle size={20} className="text-orange-500" />
-                        Foco de Estudo
-                      </h3>
-                      <div className="space-y-3">
-                        {userData.stats?.weaknesses?.map((w, i) => (
-                          <div key={i} className="text-sm bg-red-50 text-red-700 p-4 rounded-2xl border border-red-100 font-medium">
-                            {w}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          )}
-
-          {screen === 'DIAGNOSTIC' && (
-            <motion.div 
-              key="diagnostic"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="max-w-3xl mx-auto"
-            >
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <div className="flex justify-between items-center mb-10">
-                  <span className="text-xs font-black uppercase tracking-[0.2em] text-orange-500">Questão {currentQuestionIndex + 1} de 25</span>
-                  <div className="w-48 h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-orange-500 transition-all duration-700 ease-out" 
-                      style={{ width: `${((currentQuestionIndex + 1) / 25) * 100}%` }}
-                    />
-                  </div>
+                    <h2 id="header-title" class="hidden md:block text-lg font-bold text-gray-800">Dashboard</h2>
                 </div>
                 
-                <h3 className="text-3xl font-black mb-10 leading-tight">{diagnosticQuestions[currentQuestionIndex]?.question}</h3>
-                
-                <div className="grid grid-cols-1 gap-4">
-                  {diagnosticQuestions[currentQuestionIndex]?.options?.map((option, i) => (
-                    <button 
-                      key={i}
-                      onClick={() => submitDiagnosticAnswer(option)}
-                      className="w-full text-left p-6 rounded-3xl border-2 border-gray-50 hover:border-orange-500 hover:bg-orange-50 transition-all flex items-center justify-between group"
-                    >
-                      <div className="flex items-center gap-6">
-                        <span className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center text-lg font-black text-gray-400 group-hover:bg-orange-500 group-hover:text-white transition-all shadow-sm">
-                          {String.fromCharCode(65 + i)}
-                        </span>
-                        <span className="font-bold text-lg text-gray-700">{option}</span>
-                      </div>
-                      <ChevronRight size={24} className="text-gray-200 group-hover:text-orange-500 transition-colors" />
+                <div class="flex items-center gap-2">
+                    <button id="settings-button" class="p-2 rounded-full transition-colors hover:bg-gray-100 text-gray-400">
+                        <i data-lucide="settings" size="20"></i>
                     </button>
-                  ))}
                 </div>
-              </div>
-            </motion.div>
-          )}
+            </header>
 
-          {screen === 'DIAGNOSTIC_RESULTS' && (
-            <motion.div 
-              key="diagnostic-results"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="max-w-3xl mx-auto space-y-8"
-            >
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <div className="text-center mb-12">
-                  <div className="inline-flex items-center justify-center w-24 h-24 bg-green-100 text-green-600 rounded-[32px] mb-6 shadow-lg shadow-green-50">
-                    <CheckCircle2 size={48} />
-                  </div>
-                  <h2 className="text-4xl font-black mb-3">Diagnóstico Concluído!</h2>
-                  <p className="text-gray-500 text-lg">
-                    Você acertou <span className="text-orange-500 font-black">{answers.filter(a => a.isCorrect).length} de 25</span> questões ({Math.round((answers.filter(a => a.isCorrect).length / 25) * 100)}%)
-                  </p>
+            <main class="flex-1 overflow-y-auto pb-24 md:pb-12 relative">
+                <!-- Global Loader -->
+                <div id="global-loader" class="hidden absolute inset-0 z-50 bg-white/50 backdrop-blur-sm flex items-center justify-center">
+                    <div class="bg-white p-8 rounded-3xl shadow-xl flex flex-col items-center gap-4">
+                        <i data-lucide="loader-2" class="loader-spin text-orange-500" size="48"></i>
+                        <p class="font-bold text-gray-600">Carregando...</p>
+                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-12">
-                  <div className="space-y-8">
-                    <h3 className="font-black text-2xl flex items-center gap-3">
-                      <Target className="text-orange-500" />
-                      Habilidades
-                    </h3>
-                    <div className="space-y-6">
-                      {[
-                        { id: 'reading', label: 'Leitura' },
-                        { id: 'writing', label: 'Escrita' },
-                        { id: 'listening', label: 'Audição' },
-                        { id: 'speaking', label: 'Fala' }
-                      ].map((skill) => (
-                        <div key={skill.id} className="space-y-3">
-                          <div className="flex justify-between items-end">
-                            <span className="text-xs font-black text-gray-400 uppercase tracking-widest">{skill.label}</span>
-                            <span className="text-sm font-black text-orange-500">{getLevelLabel((userData.stats as any)?.[skill.id])}</span>
-                          </div>
-                          <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-orange-500 transition-all duration-1000 ease-out" 
-                              style={{ width: `${(((userData.stats as any)?.[skill.id] || 0) / 5) * 100}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-gray-50 p-5 rounded-[48px] border border-gray-100 flex flex-col items-center justify-center text-center shadow-inner">
-                    <p className="text-xs font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Nível Geral</p>
-                    <div className="text-5xl font-black text-orange-500 mb-4 leading-tight">
-                      {getLevelLabel(userData.stats?.overall)}
-                    </div>
-                    <p className="text-gray-500 text-sm font-medium">Seu ponto de partida oficial</p>
-                  </div>
+                <div id="content-container" class="max-w-4xl mx-auto p-5 md:p-10">
+                    <!-- Screens will be injected here -->
                 </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
-                  <div className="p-8 bg-green-50 rounded-[32px] border border-green-100">
-                    <h4 className="font-black text-green-800 mb-4 flex items-center gap-3">
-                      <CheckCircle2 size={20} />
-                      Pontos Fortes
-                    </h4>
-                    <ul className="space-y-3">
-                      {userData.stats?.strengths.map((s, i) => (
-                        <li key={i} className="text-sm text-green-700 flex items-start gap-3 font-medium">
-                          <span className="mt-1.5 w-2 h-2 bg-green-400 rounded-full shrink-0" />
-                          {s}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="p-8 bg-red-50 rounded-[32px] border border-red-100">
-                    <h4 className="font-black text-red-800 mb-4 flex items-center gap-3">
-                      <AlertCircle size={20} />
-                      Oportunidades
-                    </h4>
-                    <ul className="space-y-3">
-                      {userData.stats?.weaknesses.map((w, i) => (
-                        <li key={i} className="text-sm text-red-700 flex items-start gap-3 font-medium">
-                          <span className="mt-1.5 w-2 h-2 bg-red-400 rounded-full shrink-0" />
-                          {w}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-
-                <button 
-                  onClick={() => {
-                    saveUserData({ diagnosticCompleted: true });
-                    showScreen('DASHBOARD');
-                  }}
-                  className="w-full bg-gray-900 text-white font-black py-6 rounded-[32px] hover:bg-black transition-all shadow-2xl flex items-center justify-center gap-4 text-xl"
-                >
-                  Ir para o Painel de Estudos
-                  <ChevronRight size={24} />
-                </button>
-              </div>
-            </motion.div>
-          )}
-
-          {screen === 'STUDY' && (
-            <motion.div 
-              key="study"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="max-w-3xl mx-auto"
-            >
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                {!moduleContent && loading ? (
-                  <div className="py-20 flex flex-col items-center justify-center gap-4">
-                    <Loader2 className="animate-spin text-orange-500" size={48} />
-                    <p className="font-bold text-gray-500">Gerando conteúdo personalizado...</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-4 mb-10">
-                  <div className="w-14 h-14 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center shadow-sm">
-                    {currentModule === 'reading' && <BookOpen size={28} />}
-                    {currentModule === 'writing' && <PenTool size={28} />}
-                    {currentModule === 'listening' && <Headphones size={28} />}
-                    {currentModule === 'speaking' && <Mic2 size={28} />}
-                  </div>
-                  <div>
-                    <h2 className="text-2xl font-black capitalize">{currentModule === 'reading' ? 'Leitura' : currentModule === 'writing' ? 'Escrita' : currentModule === 'listening' ? 'Audição' : 'Fala'}</h2>
-                    <p className="text-xs text-gray-400 uppercase font-black tracking-widest">{getLevelLabel(userData.stats?.overall)}</p>
-                  </div>
-                </div>
-
-                {!feedback ? (
-                  <div className="space-y-10">
-                    {currentModule === 'reading' && (
-                      <div className="space-y-8">
-                        {!moduleContent?.selectedOption ? (
-                          <div className="space-y-6">
-                            <h3 className="text-xl font-black mb-4">Escolha um tópico para leitura:</h3>
-                            <div className="grid grid-cols-1 gap-4">
-                              {moduleContent?.options?.map((opt: any, idx: number) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => setModuleContent({ ...moduleContent, selectedOption: opt })}
-                                  className="w-full text-left p-6 rounded-3xl border-2 border-gray-50 hover:border-orange-500 hover:bg-orange-50 transition-all flex items-center justify-between group"
-                                >
-                                  <span className="font-bold text-lg text-gray-700">{opt.title}</span>
-                                  <ChevronRight size={24} className="text-gray-200 group-hover:text-orange-500 transition-colors" />
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-8">
-                            <button 
-                              onClick={() => setModuleContent({ ...moduleContent, selectedOption: null })}
-                              className="text-orange-500 font-bold flex items-center gap-2 hover:underline"
-                            >
-                              <ArrowLeft size={16} />
-                              Mudar tópico
-                            </button>
-                            <h3 className="text-2xl font-black">{moduleContent.selectedOption.title}</h3>
-                            <div className="bg-gray-50 p-8 rounded-3xl border border-gray-100 leading-relaxed text-xl italic text-gray-700 shadow-inner">
-                              {moduleContent.selectedOption.text}
-                            </div>
-                            <div className="space-y-4">
-                              <h4 className="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Vocabulário</h4>
-                              <div className="flex flex-wrap gap-3">
-                                {moduleContent.selectedOption.vocabulary?.map((v: any, i: number) => (
-                                  <div key={i} className="bg-white px-5 py-3 rounded-2xl border border-gray-100 text-sm shadow-sm font-medium">
-                                    <span className="font-black text-orange-500">{v.term}</span>: {v.translation}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="space-y-6">
-                              <h4 className="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Compreensão</h4>
-                              <textarea 
-                                className="w-full p-6 rounded-3xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[150px] text-lg bg-gray-50"
-                                placeholder="Responda as perguntas do texto em inglês..."
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {currentModule === 'writing' && (
-                      <div className="space-y-8">
-                        <div className="bg-orange-50 p-8 rounded-3xl border border-orange-100 shadow-sm">
-                          <h4 className="font-black text-orange-800 mb-3 uppercase text-xs tracking-widest">Desafio de Escrita:</h4>
-                          <p className="text-2xl font-bold text-orange-900 leading-tight">{moduleContent?.prompt}</p>
-                        </div>
-                        <textarea 
-                          className="w-full p-8 rounded-[40px] border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[250px] text-lg bg-gray-50"
-                          placeholder="Escreva seu texto aqui..."
-                        />
-                      </div>
-                    )}
-
-                    {currentModule === 'listening' && (
-                      <div className="space-y-8">
-                        <div className="bg-gray-900 text-white p-5 rounded-[40px] text-center space-y-6 shadow-2xl">
-                          <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mx-auto shadow-inner">
-                            <Headphones size={40} />
-                          </div>
-                          <p className="text-gray-400 italic text-lg">"Simulando áudio... Leia o script abaixo como se estivesse ouvindo."</p>
-                          <div className="p-6 bg-white/5 rounded-3xl text-left font-mono text-base leading-relaxed border border-white/5">
-                            {moduleContent?.script}
-                          </div>
-                        </div>
-                        <div className="space-y-6">
-                          <h4 className="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Ditado</h4>
-                          <p className="text-xl font-bold text-gray-700">{moduleContent?.dictationExercise}</p>
-                          <input 
-                            type="text"
-                            className="w-full p-6 rounded-2xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none text-lg bg-gray-50"
-                            placeholder="Complete a frase..."
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {currentModule === 'speaking' && (
-                      <div className="space-y-8">
-                        <div className="bg-blue-50 p-8 rounded-3xl border border-blue-100 shadow-sm">
-                          <h4 className="font-black text-blue-800 mb-3 uppercase text-xs tracking-widest">Simulação de Diálogo:</h4>
-                          <p className="text-2xl font-bold text-blue-900 italic leading-tight mb-6">"{moduleContent?.dialogueContext}"</p>
-                          <div className="p-6 bg-white rounded-2xl border border-blue-100 shadow-sm">
-                            <p className="text-[10px] text-gray-400 uppercase font-black mb-2 tracking-widest">Interlocutor:</p>
-                            <p className="text-xl font-bold text-gray-800">"{moduleContent?.interlocutorLine}"</p>
-                          </div>
-                        </div>
-                        <div className="space-y-6">
-                          <h4 className="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Sua Resposta</h4>
-                          <textarea 
-                            className="w-full p-6 rounded-3xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[150px] text-lg bg-gray-50"
-                            placeholder="O que você diria em resposta? Tente ser natural."
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <button 
-                      onClick={(e) => {
-                        const container = e.currentTarget.parentElement;
-                        const input = container?.querySelector('textarea, input') as HTMLTextAreaElement | HTMLInputElement;
-                        if (input?.value) submitModuleResponse(input.value);
-                      }}
-                      disabled={loading}
-                      className="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-4 text-xl disabled:opacity-50"
-                    >
-                      {loading ? <Loader2 className="animate-spin" /> : "Enviar para Avaliação"}
-                    </button>
-                  </div>
-                ) : (
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="space-y-10"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-6">
-                        <div className={`w-20 h-20 rounded-[32px] flex items-center justify-center text-3xl font-black shadow-lg ${feedback.score >= 7 ? 'bg-green-100 text-green-600 shadow-green-50' : 'bg-orange-100 text-orange-600 shadow-orange-50'}`}>
-                          {feedback.score}
-                        </div>
-                        <div>
-                          <h3 className="text-2xl font-black">Avaliação da IA</h3>
-                          <p className="text-gray-400 font-bold uppercase text-xs tracking-widest">Excelente esforço!</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => showScreen('DASHBOARD')}
-                        className="bg-gray-100 text-gray-600 px-8 py-4 rounded-2xl font-black hover:bg-gray-200 transition-all shadow-sm"
-                      >
-                        Concluir
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
-                        <h4 className="text-[10px] font-black uppercase text-gray-400 mb-4 tracking-[0.2em]">Explicação</h4>
-                        <p className="text-gray-700 leading-relaxed text-lg">{feedback.explanation}</p>
-                      </div>
-                      <div className="bg-green-50 p-5 rounded-[32px] border border-green-100 shadow-sm">
-                        <h4 className="text-[10px] font-black uppercase text-green-600 mb-4 tracking-[0.2em]">Forma Correta</h4>
-                        <p className="text-green-900 font-bold text-xl italic leading-tight">"{feedback.correctForm}"</p>
-                      </div>
-                    </div>
-
-                    <div className="bg-blue-50 p-5 rounded-[40px] border border-blue-100 shadow-sm">
-                      <h4 className="text-[10px] font-black uppercase text-blue-600 mb-4 tracking-[0.2em]">Como um Nativo Diria</h4>
-                      <p className="text-blue-900 font-black text-2xl italic leading-tight">"{feedback.nativeSuggestion}"</p>
-                    </div>
-
-                    <button 
-                      onClick={() => startModule(currentModule!)}
-                      className="w-full border-4 border-orange-500 text-orange-500 font-black py-6 rounded-[32px] hover:bg-orange-50 transition-all text-xl"
-                    >
-                      Tentar Outro Exercício
-                    </button>
-                  </motion.div>
-                )}
-                </>
-                )}
-              </div>
-            </motion.div>
-          )}
-          {screen === 'SETTINGS' && (
-            <motion.div 
-              key="settings"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="max-w-2xl mx-auto space-y-8"
-            >
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <h2 className="text-2xl font-black mb-8 flex items-center gap-3">
-                  <User size={28} className="text-orange-500" />
-                  Perfil do Usuário
-                </h2>
-                <div className="space-y-6">
-                  <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                    <div className="w-16 h-16 bg-orange-500 rounded-2xl flex items-center justify-center text-white text-2xl font-black">
-                      {userData.name?.[0]}
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-bold">{userData.name}</h3>
-                      <p className="text-gray-500 text-sm">Estudando para: {userData.plan?.goal}</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Sessões Concluídas</p>
-                      <p className="text-2xl font-black text-gray-800">{userData.sessionsCompleted}</p>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Palavras Aprendidas</p>
-                      <p className="text-2xl font-black text-gray-800">{userData.wordsLearned}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <h3 className="text-xl font-black mb-6">Níveis por Habilidade</h3>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {[
-                    { id: 'reading', label: 'Leitura' },
-                    { id: 'writing', label: 'Escrita' },
-                    { id: 'listening', label: 'Audição' },
-                    { id: 'speaking', label: 'Fala' },
-                    { id: 'vocabulary', label: 'Vocabulário' },
-                    { id: 'overall', label: 'Geral' }
-                  ].map((skill) => (
-                    <div key={skill.id} className="p-4 bg-gray-50 rounded-2xl border border-gray-100 text-center">
-                      <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">{skill.label}</p>
-                      <p className="text-sm font-bold text-orange-500">{getLevelLabel((userData.stats as any)?.[skill.id])}</p>
-                    </div>
-                  ))}
-                </div>
-                <button 
-                  onClick={startDiagnostic}
-                  className="w-full mt-6 bg-orange-50 text-orange-500 font-bold py-4 rounded-2xl hover:bg-orange-100 transition-all border border-orange-100"
-                >
-                  Refazer Diagnóstico
-                </button>
-              </div>
-
-              <div className="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                <h3 className="text-xl font-black mb-6">Ajustar Plano de Estudos</h3>
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const formData = new FormData(e.currentTarget);
-                  handleOnboardingSubmit({
-                    name: userData.name!,
-                    days: Number(formData.get('days')),
-                    minutes: Number(formData.get('minutes')),
-                    goal: userData.plan?.goal as any
-                  });
-                }} className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Dias por semana</label>
-                      <select name="days" defaultValue={userData.plan?.daysPerWeek} className="w-full p-4 rounded-xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                        <option value="3">3 dias</option>
-                        <option value="5">5 dias</option>
-                        <option value="7">Todos os dias</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Minutos por dia</label>
-                      <select name="minutes" defaultValue={userData.plan?.minutesPerDay} className="w-full p-4 rounded-xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                        <option value="15">15 minutos</option>
-                        <option value="30">30 minutos</option>
-                        <option value="60">1 hora</option>
-                      </select>
-                    </div>
-                  </div>
-                  <button 
-                    type="submit"
-                    disabled={loading}
-                    className="w-full bg-gray-900 text-white font-bold py-4 rounded-2xl hover:bg-black transition-all flex items-center justify-center gap-2"
-                  >
-                    {loading ? <Loader2 className="animate-spin" size={20} /> : "Atualizar Plano"}
-                  </button>
-                </form>
-              </div>
-
-              <div className="pt-8">
-                <button 
-                  onClick={() => {
-                    if (confirm("Tem certeza que deseja resetar todo o seu progresso?")) {
-                      localStorage.removeItem('lumina_user_data');
-                      window.location.reload();
-                    }
-                  }} 
-                  className="w-full text-red-500 font-bold py-4 rounded-2xl hover:bg-red-50 transition-all border border-transparent hover:border-red-100"
-                >
-                  Resetar Todos os Dados
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-          </div>
-        </main>
-      </div>
-
-      {error && (
-        <div className="fixed bottom-24 md:bottom-8 right-8 bg-red-500 text-white px-8 py-5 rounded-[32px] shadow-2xl flex items-center gap-4 animate-bounce z-[100]">
-          <AlertCircle size={28} />
-          <p className="font-black text-lg">{error}</p>
-          <button onClick={() => setError(null)} className="ml-4 hover:opacity-70 text-2xl">✕</button>
+            </main>
         </div>
-      )}
     </div>
-  );
-}
+
+    <!-- Error Toast -->
+    <div id="error-toast" class="hidden fixed bottom-24 md:bottom-8 right-8 bg-red-500 text-white px-8 py-5 rounded-[32px] shadow-2xl flex items-center gap-4 animate-bounce z-[100]">
+        <i data-lucide="alert-circle" size="28"></i>
+        <p id="error-message" class="font-black text-lg"></p>
+        <button id="close-error" class="ml-4 hover:opacity-70 text-2xl">✕</button>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module">
+        import { GoogleGenerativeAI } from 'https://esm.run/@google/generative-ai';
+
+        // --- State Management ---
+        let state = {
+            screen: 'API_KEY',
+            activeTab: 'DASHBOARD',
+            history: [],
+            userData: {
+                sessionsCompleted: 0,
+                wordsLearned: 0,
+                diagnosticCompleted: false,
+                name: '',
+                apiKey: '',
+                stats: null,
+                plan: null
+            },
+            loading: false,
+            diagnosticQuestions: [],
+            currentQuestionIndex: 0,
+            answers: [],
+            currentModule: null,
+            moduleContent: null,
+            feedback: null
+        };
+
+        const LEVEL_LABELS = {
+            0: "Nunca estudei",
+            1: "Iniciante",
+            2: "Básico",
+            3: "Intermediário",
+            4: "Avançado",
+            5: "Fluente"
+        };
+
+        const getLevelLabel = (level = 0) => LEVEL_LABELS[Math.round(level)] || LEVEL_LABELS[0];
+
+        // --- AI Helpers ---
+        const getAI = () => {
+            const key = state.userData.apiKey;
+            if (!key) return null;
+            return new GoogleGenerativeAI(key);
+        };
+
+        async function callGemini(prompt, responseMimeType = "application/json", schema = null) {
+            const genAI = getAI();
+            if (!genAI) throw new Error("API Key not found");
+            
+            const model = genAI.getGenerativeModel({ 
+                model: "gemini-1.5-flash",
+                generationConfig: {
+                    responseMimeType: responseMimeType,
+                    responseSchema: schema
+                }
+            });
+
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            return response.text();
+        }
+
+        // --- Navigation ---
+        function showScreen(newScreen) {
+            state.history.push(state.screen);
+            state.screen = newScreen;
+            if (['DASHBOARD', 'DIAGNOSTIC', 'SETTINGS'].includes(newScreen)) {
+                state.activeTab = newScreen;
+            }
+            render();
+        }
+
+        function goBack() {
+            if (state.history.length > 0) {
+                state.screen = state.history.pop();
+                render();
+            }
+        }
+
+        // --- Actions ---
+        async function handleApiKeySubmit(key) {
+            state.userData.apiKey = key;
+            saveData();
+            showScreen('ONBOARDING');
+        }
+
+        async function handleOnboardingSubmit(data) {
+            setLoading(true);
+            try {
+                const prompt = `Gere um plano de estudos semanal de inglês para um brasileiro com objetivo "${data.goal}", estudando ${data.days} dias por semana, ${data.minutes} minutos por dia. 
+                Níveis atuais: {"overall": 1}. Priorize as fraquezas.
+                Retorne um JSON onde as chaves são os dias (ex: "Segunda-feira") e os valores são a atividade recomendada (ex: "Leitura", "Escrita", "Audição", "Fala").`;
+                
+                const responseText = await callGemini(prompt);
+                const schedule = JSON.parse(responseText);
+
+                state.userData.name = data.name;
+                state.userData.plan = {
+                    goal: data.goal,
+                    daysPerWeek: data.days,
+                    minutesPerDay: data.minutes,
+                    schedule: schedule
+                };
+                saveData();
+                showScreen('DASHBOARD');
+            } catch (err) {
+                showError("Erro ao gerar plano de estudos. Verifique sua chave API.");
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        async function startDiagnostic() {
+            setLoading(true);
+            try {
+                const prompt = `Gere exatamente 25 questões de múltipla escolha para diagnóstico de inglês para brasileiros. 
+                Estrutura:
+                - Questões 1–5: Iniciante (vocabulário básico, saudações, reconhecimento simples).
+                - Questões 6–10: Básico-funcional (verbos comuns, frases do dia a dia, leitura simples).
+                - Questões 11–15: Intermediário (compreensão de parágrafos, gramática, phrasal verbs).
+                - Questões 16–20: Intermediário-superior (expressões idiomáticas, leitura complexa, inferência).
+                - Questões 21–25: Avançado (compreensão de nuances, escrita formal, simulação de audição complexa).
+                
+                Distribua as habilidades igualmente: pelo menos 5 de leitura, 5 de vocabulário, 5 de simulação de audição, 5 de gramática e 5 de simulação de fala/escrita.
+                Cada questão DEVE ter exatamente 4 opções (A, B, C, D) e apenas uma resposta correta.
+                As perguntas devem ser em Português, as respostas podem ser em Inglês ou Português.
+                Retorne em JSON estrito seguindo este formato:
+                [{ "id": 1, "skill": "vocabulary", "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correctAnswer": "A) ...", "type": "multiple" }]`;
+                
+                const responseText = await callGemini(prompt);
+                state.diagnosticQuestions = JSON.parse(responseText);
+                state.currentQuestionIndex = 0;
+                state.answers = [];
+                showScreen('DIAGNOSTIC');
+            } catch (err) {
+                showError("Erro ao carregar diagnóstico.");
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        async function submitDiagnosticAnswer(answer) {
+            const question = state.diagnosticQuestions[state.currentQuestionIndex];
+            const isCorrect = answer === question.correctAnswer;
+            state.answers.push({
+                questionId: question.id,
+                skill: question.skill,
+                answer,
+                isCorrect
+            });
+
+            if (state.currentQuestionIndex < state.diagnosticQuestions.length - 1) {
+                state.currentQuestionIndex++;
+                render();
+            } else {
+                setLoading(true);
+                try {
+                    const prompt = `Avalie estas 25 respostas de diagnóstico de inglês: ${JSON.stringify(state.answers)}. 
+                    Retorne um objeto JSON com níveis de 0 a 5 para: vocabulary, reading, listening, speaking, writing (baseado na gramática/vocabulário demonstrado), e overall.
+                    Inclua também strengths (array) e weaknesses (array) em Português do Brasil.`;
+                    
+                    const responseText = await callGemini(prompt);
+                    state.userData.stats = JSON.parse(responseText);
+                    saveData();
+                    showScreen('DIAGNOSTIC_RESULTS');
+                } catch (err) {
+                    showError("Erro ao avaliar diagnóstico.");
+                } finally {
+                    setLoading(false);
+                }
+            }
+        }
+
+        async function startModule(type) {
+            setLoading(true);
+            state.currentModule = type;
+            state.activeTab = type;
+            state.feedback = null;
+            state.moduleContent = null;
+            showScreen('STUDY');
+            
+            try {
+                const level = state.userData.stats?.overall || 1;
+                const levelLabel = level <= 1 ? "Iniciante" : level <= 2 ? "Básico" : level <= 3 ? "Intermediário" : "Avançado/Fluente";
+                const goal = state.userData.plan?.goal || 'fluency';
+
+                let prompt = "";
+                if (type === 'reading') {
+                    prompt = `Gere 3 opções de textos diferentes em inglês para o nível ${levelLabel} (${level}/5) sobre tópicos variados (cotidiano, tecnologia, viagens, saúde, negócios ou cultura). 
+                    Cada opção deve ter: um título curto, o texto (80-200 palavras), 3 perguntas de compreensão e 3 termos de vocabulário com tradução.
+                    Retorne um JSON com uma chave "options" que é um array de 3 objetos.`;
+                } else if (type === 'writing') {
+                    prompt = `Gere um desafio de escrita em inglês para o nível ${levelLabel} (${level}/5). 
+                    - Se Iniciante: peça 1-2 frases sobre um tópico simples.
+                    - Se Básico: peça um parágrafo curto (3-5 frases).
+                    - Se Intermediário: peça sobre uma experiência real ou opinião.
+                    - Se Avançado: peça um argumento estruturado ou texto profissional (150+ palavras).
+                    Retorne um JSON com a chave "prompt".`;
+                } else if (type === 'listening') {
+                    prompt = `Gere um script de áudio simulado em inglês nível ${level} sobre ${goal}. 
+                    Retorne um JSON com: "script" (o texto do áudio), "dictationExercise" (uma frase com lacuna para completar), e "questions" (array de 2 perguntas). 
+                    NÃO deixe campos vazios.`;
+                } else if (type === 'speaking') {
+                    prompt = `Gere uma simulação de diálogo em inglês nível ${level} sobre ${goal}. 
+                    Retorne um JSON com: "dialogueContext" (descrição da situação) e "interlocutorLine" (a fala que o usuário deve responder). 
+                    NÃO deixe campos vazios.`;
+                }
+
+                const responseText = await callGemini(prompt);
+                state.moduleContent = JSON.parse(responseText);
+                render();
+            } catch (err) {
+                showError("Erro ao carregar módulo.");
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        async function submitModuleResponse(response) {
+            setLoading(true);
+            try {
+                const prompt = `Avalie a resposta do usuário no módulo ${state.currentModule}. 
+                Contexto: ${JSON.stringify(state.moduleContent)}. 
+                Resposta do usuário: "${response}".
+                Forneça feedback em Português do Brasil: 
+                1. Explique erros (chave "explanation").
+                2. Mostre a forma correta (chave "correctForm").
+                3. Sugira como um nativo diria (chave "nativeSuggestion").
+                4. Dê uma nota de 0 a 10 (chave "score").
+                Retorne em JSON.`;
+                
+                const responseText = await callGemini(prompt);
+                state.feedback = JSON.parse(responseText);
+                
+                if (state.feedback.score >= 7) {
+                    state.userData.sessionsCompleted++;
+                    state.userData.wordsLearned += (state.moduleContent.vocabulary?.length || 5);
+                    saveData();
+                }
+                render();
+            } catch (err) {
+                showError("Erro ao obter feedback.");
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // --- Persistence ---
+        function saveData() {
+            localStorage.setItem('lumina_vanilla_data', JSON.stringify(state.userData));
+        }
+
+        function loadData() {
+            const saved = localStorage.getItem('lumina_vanilla_data');
+            if (saved) {
+                state.userData = JSON.parse(saved);
+                if (state.userData.name) {
+                    state.screen = 'DASHBOARD';
+                } else if (state.userData.apiKey) {
+                    state.screen = 'ONBOARDING';
+                }
+            }
+        }
+
+        // --- UI Rendering ---
+        function setLoading(val) {
+            state.loading = val;
+            const loader = document.getElementById('global-loader');
+            if (val) loader.classList.remove('hidden');
+            else loader.classList.add('hidden');
+        }
+
+        function showError(msg) {
+            const toast = document.getElementById('error-toast');
+            const message = document.getElementById('error-message');
+            message.innerText = msg;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 5000);
+        }
+
+        function render() {
+            const container = document.getElementById('content-container');
+            const sidebar = document.getElementById('sidebar');
+            const header = document.getElementById('main-header');
+            const backBtn = document.getElementById('back-button');
+            const headerTitle = document.getElementById('header-title');
+
+            // Visibility
+            if (state.userData.name && state.screen !== 'API_KEY' && state.screen !== 'ONBOARDING') {
+                sidebar.classList.remove('hidden');
+                header.classList.remove('hidden');
+            } else {
+                sidebar.classList.add('hidden');
+                header.classList.add('hidden');
+            }
+
+            if (state.screen !== 'DASHBOARD') backBtn.classList.remove('hidden');
+            else backBtn.classList.add('hidden');
+
+            headerTitle.innerText = {
+                'DASHBOARD': 'Dashboard',
+                'SETTINGS': 'Configurações',
+                'STUDY': 'Estudo',
+                'DIAGNOSTIC': 'Diagnóstico'
+            }[state.screen] || '';
+
+            // Render Sidebar Items
+            const navItems = document.getElementById('nav-items');
+            const items = [
+                { id: 'DASHBOARD', label: 'Dashboard', icon: 'home' },
+                { id: 'DIAGNOSTIC', label: 'Diagnóstico', icon: 'clipboard-list', action: 'startDiagnostic()' },
+                { id: 'PLAN', label: 'Plano', icon: 'calendar', action: "setActiveTab('PLAN'); showScreen('DASHBOARD')" },
+                { id: 'reading', label: 'Leitura', icon: 'book-open', action: "startModule('reading')" },
+                { id: 'writing', label: 'Escrita', icon: 'pen-tool', action: "startModule('writing')" },
+                { id: 'listening', label: 'Audição', icon: 'headphones', action: "startModule('listening')" },
+                { id: 'speaking', label: 'Fala', icon: 'mic-2', action: "startModule('speaking')" },
+            ];
+
+            navItems.innerHTML = items.map(item => {
+                const isActive = state.activeTab === item.id;
+                return `
+                    <button onclick="${item.action || `showScreen('${item.id}')`}" class="flex flex-col md:flex-row items-center gap-1 md:gap-3 px-3 py-2 md:px-4 md:py-3 rounded-xl transition-all ${isActive ? 'text-orange-500 bg-orange-50 md:bg-orange-500 md:text-white shadow-sm md:shadow-orange-200' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}">
+                        <i data-lucide="${item.icon}" size="20"></i>
+                        <span class="text-[10px] md:text-sm font-bold whitespace-nowrap">${item.label}</span>
+                    </button>
+                `;
+            }).join('');
+
+            // Render Screens
+            let html = '';
+            switch (state.screen) {
+                case 'API_KEY':
+                    html = `
+                        <div class="max-w-md mx-auto bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                            <h2 class="text-3xl font-black mb-2">Bem-vindo ao Lumina</h2>
+                            <p class="text-gray-500 mb-8">Para começar, insira sua chave da API do Gemini. Seus dados são salvos localmente.</p>
+                            <form id="api-key-form" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-bold mb-2 uppercase tracking-widest text-gray-400">Chave API Gemini</label>
+                                    <input id="api-key-input" type="password" placeholder="Insira sua chave aqui..." class="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all bg-gray-50">
+                                </div>
+                                <button type="submit" class="w-full bg-orange-500 text-white font-bold py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95">Começar Jornada</button>
+                            </form>
+                            <p class="mt-8 text-xs text-center text-gray-400">Não tem uma chave? <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-orange-500 underline font-bold">Obtenha aqui gratuitamente</a></p>
+                        </div>
+                    `;
+                    break;
+                case 'ONBOARDING':
+                    html = `
+                        <div class="max-w-2xl mx-auto space-y-8">
+                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <h2 class="text-3xl font-black mb-8">Configure seu Perfil</h2>
+                                <form id="onboarding-form" class="space-y-8">
+                                    <div>
+                                        <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Seu Nome</label>
+                                        <input name="name" required placeholder="Como podemos te chamar?" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg">
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                        <div>
+                                            <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Dias por semana</label>
+                                            <select name="days" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
+                                                <option value="3">3 dias</option>
+                                                <option value="5">5 dias</option>
+                                                <option value="7">Todos os dias</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Minutos por dia</label>
+                                            <select name="minutes" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
+                                                <option value="15">15 minutos</option>
+                                                <option value="30">30 minutos</option>
+                                                <option value="60">1 hora</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Objetivo Principal</label>
+                                        <div class="grid grid-cols-2 gap-4">
+                                            <label class="relative cursor-pointer group">
+                                                <input type="radio" name="goal" value="travel" class="peer sr-only">
+                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
+                                                    <span class="text-3xl mb-2 block">✈️</span>
+                                                    <span class="text-sm font-bold">Viagem</span>
+                                                </div>
+                                            </label>
+                                            <label class="relative cursor-pointer group">
+                                                <input type="radio" name="goal" value="fluency" checked class="peer sr-only">
+                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
+                                                    <span class="text-3xl mb-2 block">🗣️</span>
+                                                    <span class="text-sm font-bold">Fluência</span>
+                                                </div>
+                                            </label>
+                                            <label class="relative cursor-pointer group">
+                                                <input type="radio" name="goal" value="work" class="peer sr-only">
+                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
+                                                    <span class="text-3xl mb-2 block">💼</span>
+                                                    <span class="text-sm font-bold">Trabalho</span>
+                                                </div>
+                                            </label>
+                                            <label class="relative cursor-pointer group">
+                                                <input type="radio" name="goal" value="content" class="peer sr-only">
+                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
+                                                    <span class="text-3xl mb-2 block">📺</span>
+                                                    <span class="text-sm font-bold">Conteúdo</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="w-full bg-orange-500 text-white font-bold py-5 rounded-3xl hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-3 text-xl">Salvar e Continuar</button>
+                                </form>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'DASHBOARD':
+                    if (!state.userData.diagnosticCompleted) {
+                        html = `
+                            <div class="max-w-2xl mx-auto space-y-8">
+                                <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
+                                    <div class="w-20 h-20 bg-orange-100 text-orange-500 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                                        <i data-lucide="trophy" size="40"></i>
+                                    </div>
+                                    <h2 class="text-4xl font-black mb-4">Olá, ${state.userData.name}! 👋</h2>
+                                    <p class="text-gray-500 text-lg mb-8 leading-relaxed">Estamos prontos para começar sua jornada rumo à <strong>${state.userData.plan?.goal === 'travel' ? 'viagem dos sonhos' : state.userData.plan?.goal === 'work' ? 'carreira internacional' : 'fluência total'}</strong>.</p>
+                                    <div class="bg-gray-50 p-6 rounded-3xl border border-gray-100 mb-10 text-left flex items-start gap-4">
+                                        <div class="p-3 bg-white rounded-2xl shadow-sm"><i data-lucide="calendar" class="text-orange-500"></i></div>
+                                        <div>
+                                            <h4 class="font-bold text-gray-800">Seu Compromisso</h4>
+                                            <p class="text-gray-500 text-sm">${state.userData.plan?.daysPerWeek} dias por semana • ${state.userData.plan?.minutesPerDay} minutos por dia</p>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-4">
+                                        <button onclick="startDiagnostic()" class="w-full bg-orange-500 text-white font-bold py-5 rounded-3xl hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-3 text-xl">Iniciar Diagnóstico <i data-lucide="chevron-right" size="24"></i></button>
+                                        <button onclick="showScreen('ONBOARDING')" class="text-gray-400 font-medium hover:text-gray-600 transition-colors">Editar Perfil</button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        html = `
+                            <div class="flex flex-col md:flex-row gap-8">
+                                <div class="flex-1 space-y-8">
+                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                        <h2 class="text-2xl font-black mb-8 flex items-center gap-3"><i data-lucide="calendar" class="text-orange-500" size="28"></i> Atividade de Hoje</h2>
+                                        <div class="bg-orange-50 border border-orange-100 p-5 rounded-3xl mb-8">
+                                            <p class="text-orange-800 font-medium mb-6 text-lg">Recomendamos focar em <span class="font-bold underline">${(state.userData.stats?.weaknesses?.[0] || 'Escrita').toLowerCase()}</span> hoje para equilibrar suas habilidades.</p>
+                                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                                                <button onclick="startModule('reading')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
+                                                    <i data-lucide="book-open" size="28" class="text-blue-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
+                                                    <span class="text-xs font-bold uppercase tracking-widest">Leitura</span>
+                                                </button>
+                                                <button onclick="startModule('writing')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
+                                                    <i data-lucide="pen-tool" size="28" class="text-purple-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
+                                                    <span class="text-xs font-bold uppercase tracking-widest">Escrita</span>
+                                                </button>
+                                                <button onclick="startModule('listening')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
+                                                    <i data-lucide="headphones" size="28" class="text-green-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
+                                                    <span class="text-xs font-bold uppercase tracking-widest">Audição</span>
+                                                </button>
+                                                <button onclick="startModule('speaking')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
+                                                    <i data-lucide="mic-2" size="28" class="text-red-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
+                                                    <span class="text-xs font-bold uppercase tracking-widest">Fala</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                        <h3 class="font-black text-xl mb-6">Seu Plano Semanal</h3>
+                                        <div class="space-y-4">
+                                            ${Object.entries(state.userData.plan?.schedule || {}).map(([day, activity]) => `
+                                                <div class="flex items-center gap-6 p-4 rounded-2xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
+                                                    <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center text-gray-400 font-black text-xs uppercase">${day.substring(0, 3)}</div>
+                                                    <p class="text-gray-600 font-medium">${activity}</p>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="w-full md:w-80 space-y-8">
+                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
+                                        <div class="w-28 h-28 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-white shadow-inner">
+                                            <span class="text-xl font-black text-orange-500 leading-tight px-2">${getLevelLabel(state.userData.stats?.overall)}</span>
+                                        </div>
+                                        <h3 class="font-black text-xl mb-1">Nível Geral</h3>
+                                        <p class="text-gray-400 text-xs font-bold uppercase tracking-widest mb-8">Escala Descritiva</p>
+                                        <div class="space-y-6 text-left">
+                                            ${['reading', 'writing', 'listening', 'speaking'].map(skill => `
+                                                <div class="space-y-2">
+                                                    <div class="flex justify-between items-end">
+                                                        <span class="text-[10px] font-black uppercase text-gray-400 tracking-widest">${skill === 'reading' ? 'Leitura' : skill === 'writing' ? 'Escrita' : skill === 'listening' ? 'Audição' : 'Fala'}</span>
+                                                        <span class="text-[10px] font-black text-orange-500">${getLevelLabel(state.userData.stats?.[skill])}</span>
+                                                    </div>
+                                                    <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
+                                                        <div class="h-full bg-orange-500" style="width: ${((state.userData.stats?.[skill] || 0) / 5) * 100}%"></div>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    break;
+                case 'DIAGNOSTIC':
+                    const q = state.diagnosticQuestions[state.currentQuestionIndex];
+                    html = `
+                        <div class="max-w-3xl mx-auto">
+                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <div class="flex justify-between items-center mb-10">
+                                    <span class="text-xs font-black uppercase tracking-[0.2em] text-orange-500">Questão ${state.currentQuestionIndex + 1} de 25</span>
+                                    <div class="w-48 h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                                        <div class="h-full bg-orange-500 transition-all duration-700 ease-out" style="width: ${((state.currentQuestionIndex + 1) / 25) * 100}%"></div>
+                                    </div>
+                                </div>
+                                <h3 class="text-3xl font-black mb-10 leading-tight">${q?.question}</h3>
+                                <div class="grid grid-cols-1 gap-4">
+                                    ${q?.options?.map((opt, i) => `
+                                        <button onclick="submitDiagnosticAnswer('${opt}')" class="w-full text-left p-6 rounded-3xl border-2 border-gray-50 hover:border-orange-500 hover:bg-orange-50 transition-all flex items-center justify-between group">
+                                            <div class="flex items-center gap-6">
+                                                <span class="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center text-lg font-black text-gray-400 group-hover:bg-orange-500 group-hover:text-white transition-all shadow-sm">${String.fromCharCode(65 + i)}</span>
+                                                <span class="font-bold text-lg text-gray-700">${opt}</span>
+                                            </div>
+                                            <i data-lucide="chevron-right" size="24" class="text-gray-200 group-hover:text-orange-500 transition-colors"></i>
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'DIAGNOSTIC_RESULTS':
+                    html = `
+                        <div class="max-w-3xl mx-auto space-y-8">
+                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <div class="text-center mb-12">
+                                    <div class="inline-flex items-center justify-center w-24 h-24 bg-green-100 text-green-600 rounded-[32px] mb-6 shadow-lg shadow-green-50"><i data-lucide="check-circle-2" size="48"></i></div>
+                                    <h2 class="text-4xl font-black mb-3">Diagnóstico Concluído!</h2>
+                                    <p class="text-gray-500 text-lg">Você acertou <span class="text-orange-500 font-black">${state.answers.filter(a => a.isCorrect).length} de 25</span> questões</p>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-12 mb-12">
+                                    <div class="space-y-8">
+                                        <h3 class="font-black text-2xl flex items-center gap-3"><i data-lucide="target" class="text-orange-500"></i> Habilidades</h3>
+                                        <div class="space-y-6">
+                                            ${['reading', 'writing', 'listening', 'speaking'].map(skill => `
+                                                <div class="space-y-3">
+                                                    <div class="flex justify-between items-end">
+                                                        <span class="text-xs font-black text-gray-400 uppercase tracking-widest">${skill === 'reading' ? 'Leitura' : skill === 'writing' ? 'Escrita' : skill === 'listening' ? 'Audição' : 'Fala'}</span>
+                                                        <span class="text-sm font-black text-orange-500">${getLevelLabel(state.userData.stats?.[skill])}</span>
+                                                    </div>
+                                                    <div class="h-3 bg-gray-100 rounded-full overflow-hidden">
+                                                        <div class="h-full bg-orange-500 transition-all duration-1000 ease-out" style="width: ${((state.userData.stats?.[skill] || 0) / 5) * 100}%"></div>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                    <div class="bg-gray-50 p-5 rounded-[48px] border border-gray-100 flex flex-col items-center justify-center text-center shadow-inner">
+                                        <p class="text-xs font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Nível Geral</p>
+                                        <div class="text-5xl font-black text-orange-500 mb-4 leading-tight">${getLevelLabel(state.userData.stats?.overall)}</div>
+                                        <p class="text-gray-500 text-sm font-medium">Seu ponto de partida oficial</p>
+                                    </div>
+                                </div>
+                                <button onclick="state.userData.diagnosticCompleted = true; saveData(); showScreen('DASHBOARD');" class="w-full bg-gray-900 text-white font-black py-6 rounded-[32px] hover:bg-black transition-all shadow-2xl flex items-center justify-center gap-4 text-xl">Ir para o Painel de Estudos <i data-lucide="chevron-right" size="24"></i></button>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'STUDY':
+                    html = `
+                        <div class="max-w-3xl mx-auto">
+                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                ${!state.moduleContent && state.loading ? `
+                                    <div class="py-20 flex flex-col items-center justify-center gap-4">
+                                        <i data-lucide="loader-2" class="loader-spin text-orange-500" size="48"></i>
+                                        <p class="font-bold text-gray-500">Gerando conteúdo personalizado...</p>
+                                    </div>
+                                ` : `
+                                    <div class="flex items-center gap-4 mb-10">
+                                        <div class="w-14 h-14 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center shadow-sm">
+                                            <i data-lucide="${state.currentModule === 'reading' ? 'book-open' : state.currentModule === 'writing' ? 'pen-tool' : state.currentModule === 'listening' ? 'headphones' : 'mic-2'}" size="28"></i>
+                                        </div>
+                                        <div>
+                                            <h2 class="text-2xl font-black capitalize">${state.currentModule === 'reading' ? 'Leitura' : state.currentModule === 'writing' ? 'Escrita' : state.currentModule === 'listening' ? 'Audição' : 'Fala'}</h2>
+                                            <p class="text-xs text-gray-400 uppercase font-black tracking-widest">${getLevelLabel(state.userData.stats?.overall)}</p>
+                                        </div>
+                                    </div>
+                                    ${!state.feedback ? renderModuleContent() : renderFeedback()}
+                                `}
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'SETTINGS':
+                    html = `
+                        <div class="max-w-2xl mx-auto space-y-8">
+                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <h2 class="text-2xl font-black mb-8 flex items-center gap-3"><i data-lucide="user" class="text-orange-500" size="28"></i> Perfil do Usuário</h2>
+                                <div class="space-y-6">
+                                    <div class="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                                        <div class="w-16 h-16 bg-orange-500 rounded-2xl flex items-center justify-center text-white text-2xl font-black">${state.userData.name?.[0]}</div>
+                                        <div>
+                                            <h3 class="text-xl font-bold">${state.userData.name}</h3>
+                                            <p class="text-gray-500 text-sm">Estudando para: ${state.userData.plan?.goal}</p>
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div class="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                                            <p class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Sessões Concluídas</p>
+                                            <p class="text-2xl font-black text-gray-800">${state.userData.sessionsCompleted}</p>
+                                        </div>
+                                        <div class="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                                            <p class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Palavras Aprendidas</p>
+                                            <p class="text-2xl font-black text-gray-800">${state.userData.wordsLearned}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="if(confirm('Resetar todos os dados?')) { localStorage.clear(); location.reload(); }" class="w-full text-red-500 font-bold py-4 rounded-2xl hover:bg-red-50 transition-all">Resetar Todos os Dados</button>
+                        </div>
+                    `;
+                    break;
+            }
+
+            container.innerHTML = html;
+            lucide.createIcons();
+
+            // Add Event Listeners for forms
+            if (state.screen === 'API_KEY') {
+                document.getElementById('api-key-form').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    handleApiKeySubmit(document.getElementById('api-key-input').value);
+                });
+            }
+            if (state.screen === 'ONBOARDING') {
+                document.getElementById('onboarding-form').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+                    handleOnboardingSubmit({
+                        name: formData.get('name'),
+                        days: formData.get('days'),
+                        minutes: formData.get('minutes'),
+                        goal: formData.get('goal')
+                    });
+                });
+            }
+        }
+
+        function renderModuleContent() {
+            if (state.currentModule === 'reading') {
+                if (!state.moduleContent?.selectedOption) {
+                    return `
+                        <div class="space-y-6">
+                            <h3 class="text-xl font-black mb-4">Escolha um tópico para leitura:</h3>
+                            <div class="grid grid-cols-1 gap-4">
+                                ${state.moduleContent?.options?.map((opt, idx) => `
+                                    <button onclick="state.moduleContent.selectedOption = state.moduleContent.options[${idx}]; render();" class="w-full text-left p-6 rounded-3xl border-2 border-gray-50 hover:border-orange-500 hover:bg-orange-50 transition-all flex items-center justify-between group">
+                                        <span class="font-bold text-lg text-gray-700">${opt.title}</span>
+                                        <i data-lucide="chevron-right" size="24" class="text-gray-200 group-hover:text-orange-500 transition-colors"></i>
+                                    </button>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+                const opt = state.moduleContent.selectedOption;
+                return `
+                    <div class="space-y-8">
+                        <button onclick="state.moduleContent.selectedOption = null; render();" class="text-orange-500 font-bold flex items-center gap-2 hover:underline"><i data-lucide="arrow-left" size="16"></i> Mudar tópico</button>
+                        <h3 class="text-2xl font-black">${opt.title}</h3>
+                        <div class="bg-gray-50 p-8 rounded-3xl border border-gray-100 leading-relaxed text-xl italic text-gray-700 shadow-inner">${opt.text}</div>
+                        <div class="space-y-4">
+                            <h4 class="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Vocabulário</h4>
+                            <div class="flex flex-wrap gap-3">
+                                ${opt.vocabulary?.map(v => `<div class="bg-white px-5 py-3 rounded-2xl border border-gray-100 text-sm shadow-sm font-medium"><span class="font-black text-orange-500">${v.term}</span>: ${v.translation}</div>`).join('')}
+                            </div>
+                        </div>
+                        <div class="space-y-6">
+                            <h4 class="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Compreensão</h4>
+                            <textarea id="module-response" class="w-full p-6 rounded-3xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[150px] text-lg bg-gray-50" placeholder="Responda as perguntas do texto em inglês..."></textarea>
+                        </div>
+                        <button onclick="submitModuleResponse(document.getElementById('module-response').value)" class="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-4 text-xl">Enviar para Avaliação</button>
+                    </div>
+                `;
+            }
+            if (state.currentModule === 'writing') {
+                return `
+                    <div class="space-y-8">
+                        <div class="bg-orange-50 p-8 rounded-3xl border border-orange-100 shadow-sm">
+                            <h4 class="font-black text-orange-800 mb-3 uppercase text-xs tracking-widest">Desafio de Escrita:</h4>
+                            <p class="text-2xl font-bold text-orange-900 leading-tight">${state.moduleContent?.prompt}</p>
+                        </div>
+                        <textarea id="module-response" class="w-full p-8 rounded-[40px] border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[250px] text-lg bg-gray-50" placeholder="Escreva seu texto aqui..."></textarea>
+                        <button onclick="submitModuleResponse(document.getElementById('module-response').value)" class="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-4 text-xl">Enviar para Avaliação</button>
+                    </div>
+                `;
+            }
+            if (state.currentModule === 'listening') {
+                return `
+                    <div class="space-y-8">
+                        <div class="bg-gray-900 text-white p-5 rounded-[40px] text-center space-y-6 shadow-2xl">
+                            <div class="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mx-auto shadow-inner"><i data-lucide="headphones" size="40"></i></div>
+                            <p class="text-gray-400 italic text-lg">"Simulando áudio... Leia o script abaixo como se estivesse ouvindo."</p>
+                            <div class="p-6 bg-white/5 rounded-3xl text-left font-mono text-base leading-relaxed border border-white/5">${state.moduleContent?.script}</div>
+                        </div>
+                        <div class="space-y-6">
+                            <h4 class="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Ditado</h4>
+                            <p class="text-xl font-bold text-gray-700">${state.moduleContent?.dictationExercise}</p>
+                            <input id="module-response" type="text" class="w-full p-6 rounded-2xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none text-lg bg-gray-50" placeholder="Complete a frase...">
+                        </div>
+                        <button onclick="submitModuleResponse(document.getElementById('module-response').value)" class="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-4 text-xl">Enviar para Avaliação</button>
+                    </div>
+                `;
+            }
+            if (state.currentModule === 'speaking') {
+                return `
+                    <div class="space-y-8">
+                        <div class="bg-blue-50 p-8 rounded-3xl border border-blue-100 shadow-sm">
+                            <h4 class="font-black text-blue-800 mb-3 uppercase text-xs tracking-widest">Simulação de Diálogo:</h4>
+                            <p class="text-2xl font-bold text-blue-900 italic leading-tight mb-6">"${state.moduleContent?.dialogueContext}"</p>
+                            <div class="p-6 bg-white rounded-2xl border border-blue-100 shadow-sm">
+                                <p class="text-[10px] text-gray-400 uppercase font-black mb-2 tracking-widest">Interlocutor:</p>
+                                <p class="text-xl font-bold text-gray-800">"${state.moduleContent?.interlocutorLine}"</p>
+                            </div>
+                        </div>
+                        <div class="space-y-6">
+                            <h4 class="font-black text-gray-400 uppercase text-xs tracking-[0.2em]">Sua Resposta</h4>
+                            <textarea id="module-response" class="w-full p-6 rounded-3xl border border-gray-100 focus:ring-4 focus:ring-orange-100 outline-none min-h-[150px] text-lg bg-gray-50" placeholder="O que você diria em resposta? Tente ser natural."></textarea>
+                        </div>
+                        <button onclick="submitModuleResponse(document.getElementById('module-response').value)" class="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-4 text-xl">Enviar para Avaliação</button>
+                    </div>
+                `;
+            }
+            return '';
+        }
+
+        function renderFeedback() {
+            const f = state.feedback;
+            return `
+                <div class="space-y-10">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-6">
+                            <div class="w-20 h-20 rounded-[32px] flex items-center justify-center text-3xl font-black shadow-lg ${f.score >= 7 ? 'bg-green-100 text-green-600 shadow-green-50' : 'bg-orange-100 text-orange-600 shadow-orange-50'}">${f.score}</div>
+                            <div>
+                                <h3 class="text-2xl font-black">Avaliação da IA</h3>
+                                <p class="text-gray-400 font-bold uppercase text-xs tracking-widest">Excelente esforço!</p>
+                            </div>
+                        </div>
+                        <button onclick="showScreen('DASHBOARD')" class="bg-gray-100 text-gray-600 px-8 py-4 rounded-2xl font-black hover:bg-gray-200 transition-all shadow-sm">Concluir</button>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div class="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
+                            <h4 class="text-[10px] font-black uppercase text-gray-400 mb-4 tracking-[0.2em]">Explicação</h4>
+                            <p class="text-gray-700 leading-relaxed text-lg">${f.explanation}</p>
+                        </div>
+                        <div class="bg-green-50 p-5 rounded-[32px] border border-green-100 shadow-sm">
+                            <h4 class="text-[10px] font-black uppercase text-green-600 mb-4 tracking-[0.2em]">Forma Correta</h4>
+                            <p class="text-green-900 font-bold text-xl italic leading-tight">"${f.correctForm}"</p>
+                        </div>
+                    </div>
+                    <div class="bg-blue-50 p-5 rounded-[40px] border border-blue-100 shadow-sm">
+                        <h4 class="text-[10px] font-black uppercase text-blue-600 mb-4 tracking-[0.2em]">Como um Nativo Diria</h4>
+                        <p class="text-blue-900 font-black text-2xl italic leading-tight">"${f.nativeSuggestion}"</p>
+                    </div>
+                    <button onclick="startModule(state.currentModule)" class="w-full border-4 border-orange-500 text-orange-500 font-black py-6 rounded-[32px] hover:bg-orange-50 transition-all text-xl">Tentar Outro Exercício</button>
+                </div>
+            `;
+        }
+
+        // --- Global Listeners ---
+        window.showScreen = showScreen;
+        window.goBack = goBack;
+        window.startDiagnostic = startDiagnostic;
+        window.submitDiagnosticAnswer = submitDiagnosticAnswer;
+        window.startModule = startModule;
+        window.submitModuleResponse = submitModuleResponse;
+        window.setActiveTab = (tab) => { state.activeTab = tab; render(); };
+
+        document.getElementById('back-button').addEventListener('click', goBack);
+        document.getElementById('settings-button').addEventListener('click', () => showScreen('SETTINGS'));
+        document.getElementById('close-error').addEventListener('click', () => document.getElementById('error-toast').classList.add('hidden'));
+
+        // --- Init ---
+        loadData();
+        render();
+    </script>
+</body>
+</html>

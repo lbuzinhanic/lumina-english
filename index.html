@@ -271,6 +271,8 @@
 
         async function handleLogout() {
             state.isLoggedIn = false;
+            // We don't necessarily clear apiKey/name unless user wants a full reset, 
+            // but the prompt says returning to login is key.
             state.screen = 'LOGIN';
             state.activeTab = 'DASHBOARD';
             saveData();
@@ -278,9 +280,18 @@
         }
 
         async function handleApiKeySubmit(key) {
-            state.userData.apiKey = key;
+            if (!key) {
+                showError("Por favor, insira sua chave API do Gemini para continuar.");
+                return;
+            }
+            state.userData.apiKey = key.trim();
             saveData();
-            showScreen('ONBOARDING');
+            
+            if (!state.userData.name) {
+                showScreen('ONBOARDING');
+            } else {
+                showScreen('DASHBOARD');
+            }
         }
 
         async function handleOnboardingSubmit(data) {
@@ -511,19 +522,34 @@
         }
 
         function render() {
+            const app = document.getElementById('app');
             const container = document.getElementById('content-container');
             const sidebar = document.getElementById('sidebar');
             const header = document.getElementById('main-header');
             const backBtn = document.getElementById('back-button');
             const headerTitle = document.getElementById('header-title');
 
-            // Visibility
-            if (state.isLoggedIn && state.userData.name && !['LOGIN', 'API_KEY', 'ONBOARDING'].includes(state.screen)) {
-                sidebar.classList.remove('hidden');
+            // Force Login screen if not authenticated
+            if (!state.isLoggedIn && state.screen !== 'LOGIN') {
+                state.screen = 'LOGIN';
+            }
+
+            // Visibility: Hide everything except core content for Auth screens
+            const isAuthScreen = ['LOGIN', 'API_KEY', 'ONBOARDING'].includes(state.screen);
+            const isFullApp = state.isLoggedIn && state.userData.apiKey && state.userData.name && !isAuthScreen;
+            
+            if (isFullApp) {
+                sidebar.classList.remove('hidden', 'md:hidden');
+                sidebar.classList.add('md:flex');
                 header.classList.remove('hidden');
+                app.className = "min-h-screen flex flex-col md:flex-row bg-[#F8F9FA]";
+                container.className = "max-w-7xl mx-auto p-4 md:p-8 w-full"; 
             } else {
-                sidebar.classList.add('hidden');
+                sidebar.classList.add('hidden', 'md:hidden');
+                sidebar.classList.remove('md:flex');
                 header.classList.add('hidden');
+                app.className = "min-h-screen flex items-center justify-center bg-gray-50 p-4";
+                container.className = state.screen === 'ONBOARDING' ? "w-full max-w-2xl px-4" : "w-full max-w-md px-4"; 
             }
 
             if (state.screen !== 'DASHBOARD') backBtn.classList.remove('hidden');
@@ -564,109 +590,86 @@
             switch (state.screen) {
                 case 'LOGIN':
                     html = `
-                        <div class="max-w-md mx-auto bg-white p-10 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                        <div class="w-full bg-white p-10 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
                             <div class="flex items-center gap-3 mb-8 justify-center">
                                 <div class="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-orange-200">
                                     <i data-lucide="book-open" size="28"></i>
                                 </div>
                                 <h1 class="text-3xl font-black tracking-tight">Lumina</h1>
                             </div>
-                            <h2 class="text-2xl font-bold mb-2 text-center">Bem-vindo de volta!</h2>
-                            <p class="text-gray-400 text-center mb-10">Entre para continuar seus estudos.</p>
+                            <h2 class="text-2xl font-bold mb-2 text-center text-gray-800">Bem-vindo de volta</h2>
+                            <p class="text-gray-400 text-center mb-10">Entre com sua conta Lumina para continuar.</p>
                             <form id="login-form" class="space-y-6">
                                 <div>
-                                    <label class="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2">E-mail ou Usuário</label>
-                                    <input type="text" required placeholder="seu@email.com" class="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 transition-all">
+                                    <label class="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2 font-black">E-mail ou Usuário</label>
+                                    <input id="login-email" type="text" placeholder="seu@email.com" class="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 transition-all">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2">Senha</label>
-                                    <input type="password" required placeholder="••••••••" class="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 transition-all">
+                                    <label class="block text-xs font-black uppercase tracking-widest text-gray-400 mb-2 font-black">Senha</label>
+                                    <input id="login-password" type="password" placeholder="••••••••" class="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 transition-all">
                                 </div>
-                                <button type="submit" class="w-full bg-orange-500 text-white font-black py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95 text-lg">Entrar</button>
+                                <button type="submit" class="w-full bg-orange-500 text-white font-black py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95 text-lg text-center uppercase tracking-widest">Entrar</button>
                             </form>
                         </div>
                     `;
                     break;
                 case 'API_KEY':
                     html = `
-                        <div class="max-w-md mx-auto bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                            <h2 class="text-3xl font-black mb-2">Bem-vindo ao Lumina</h2>
-                            <p class="text-gray-500 mb-8">Para começar, insira sua chave da API do Gemini. Seus dados são salvos localmente.</p>
-                            <form id="api-key-form" class="space-y-4">
-                                <div>
-                                    <label class="block text-sm font-bold mb-2 uppercase tracking-widest text-gray-400">Chave API Gemini</label>
-                                    <input id="api-key-input" type="password" placeholder="Insira sua chave aqui..." class="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all bg-gray-50">
+                        <div class="w-full bg-white p-10 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                            <div class="flex items-center gap-3 mb-8 justify-center">
+                                <div class="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-orange-200">
+                                    <i data-lucide="key" size="28"></i>
                                 </div>
-                                <button type="submit" class="w-full bg-orange-500 text-white font-bold py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95">Começar Jornada</button>
+                            </div>
+                            <h2 class="text-2xl font-bold mb-2 text-center">Configurar IA</h2>
+                            <p class="text-gray-400 text-center mb-10">O Lumina utiliza o poder do Google Gemini para personalizar sua experiência. Por favor, insira sua chave API abaixo.</p>
+                            <form id="api-key-form" class="space-y-6">
+                                <div>
+                                    <label class="block text-xs font-black uppercase tracking-widest text-orange-500 mb-2">Chave API Gemini</label>
+                                    <input id="api-key-input" type="password" required placeholder="Cole sua chave aqui..." class="w-full px-6 py-4 rounded-2xl border border-orange-100 bg-orange-50/30 outline-none focus:ring-2 focus:ring-orange-500 transition-all">
+                                    <p class="mt-4 text-xs text-gray-400 text-center">Não tem uma chave? <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-orange-500 underline font-bold italic">Obter agora gratuitamente</a></p>
+                                </div>
+                                <button type="submit" class="w-full bg-orange-500 text-white font-black py-5 rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-200 active:scale-95 text-lg text-center uppercase tracking-widest">Continuar</button>
                             </form>
-                            <p class="mt-8 text-xs text-center text-gray-400">Não tem uma chave? <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-orange-500 underline font-bold">Obtenha aqui gratuitamente</a></p>
                         </div>
                     `;
                     break;
                 case 'ONBOARDING':
                     html = `
-                        <div class="max-w-2xl mx-auto space-y-8">
-                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                                <h2 class="text-3xl font-black mb-8">Configure seu Perfil</h2>
-                                <form id="onboarding-form" class="space-y-8">
-                                    <div>
-                                        <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Seu Nome</label>
-                                        <input name="name" required placeholder="Como podemos te chamar?" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg">
-                                    </div>
-                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                        <div>
-                                            <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Dias por semana</label>
-                                            <select name="days" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                                                <option value="3">3 dias</option>
-                                                <option value="5">5 dias</option>
-                                                <option value="7">Todos os dias</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Minutos por dia</label>
-                                            <select name="minutes" class="w-full p-5 rounded-2xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500">
-                                                <option value="15">15 minutos</option>
-                                                <option value="30">30 minutos</option>
-                                                <option value="60">1 hora</option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label class="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Objetivo Principal</label>
-                                        <div class="grid grid-cols-2 gap-4">
-                                            <label class="relative cursor-pointer group">
-                                                <input type="radio" name="goal" value="travel" class="peer sr-only">
-                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
-                                                    <span class="text-3xl mb-2 block">✈️</span>
-                                                    <span class="text-sm font-bold">Viagem</span>
-                                                </div>
-                                            </label>
-                                            <label class="relative cursor-pointer group">
-                                                <input type="radio" name="goal" value="fluency" checked class="peer sr-only">
-                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
-                                                    <span class="text-3xl mb-2 block">🗣️</span>
-                                                    <span class="text-sm font-bold">Fluência</span>
-                                                </div>
-                                            </label>
-                                            <label class="relative cursor-pointer group">
-                                                <input type="radio" name="goal" value="work" class="peer sr-only">
-                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
-                                                    <span class="text-3xl mb-2 block">💼</span>
-                                                    <span class="text-sm font-bold">Trabalho</span>
-                                                </div>
-                                            </label>
-                                            <label class="relative cursor-pointer group">
-                                                <input type="radio" name="goal" value="content" class="peer sr-only">
-                                                <div class="p-5 rounded-3xl border border-gray-100 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm">
-                                                    <span class="text-3xl mb-2 block">📺</span>
-                                                    <span class="text-sm font-bold">Conteúdo</span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                    </div>
-                                    <button type="submit" class="w-full bg-orange-500 text-white font-bold py-5 rounded-3xl hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 flex items-center justify-center gap-3 text-xl">Salvar e Continuar</button>
-                                </form>
+                        <div class="w-full bg-white p-10 md:p-14 rounded-[50px] shadow-2xl shadow-gray-100 border border-gray-50 text-gray-800">
+                            <div class="text-center mb-12">
+                                <h2 class="text-3xl font-black mb-2 tracking-tight">Configure seu Perfil</h2>
+                                <p class="text-gray-400">Vamos personalizar sua jornada de aprendizado.</p>
                             </div>
+                            <form id="onboarding-form" class="space-y-10">
+                                <div>
+                                    <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Como devemos te chamar?</label>
+                                    <input name="name" required placeholder="Digite seu nome..." class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-xl font-bold">
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-10">
+                                    <div>
+                                        <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Dias por semana</label>
+                                        <select name="days" class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg font-bold appearance-none">
+                                            <option value="3">3 dias</option>
+                                            <option value="5" selected>5 dias</option>
+                                            <option value="7">Todos os dias</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Minutos por dia</label>
+                                        <select name="minutes" class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg font-bold appearance-none">
+                                            <option value="15">15 min</option>
+                                            <option value="30" selected>30 min</option>
+                                            <option value="60">60 min</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Qual seu objetivo principal?</label>
+                                    <input name="goal" required placeholder="Ex: Viagem, Fluência, Trabalho..." class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-xl font-bold">
+                                </div>
+                                <button type="submit" class="w-full bg-orange-500 text-white font-black py-7 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 text-2xl uppercase tracking-[0.2em] active:scale-[0.98]">Finalizar e Começar</button>
+                            </form>
                         </div>
                     `;
                     break;
@@ -927,7 +930,9 @@
             if (state.screen === 'LOGIN') {
                 document.getElementById('login-form').addEventListener('submit', (e) => {
                     e.preventDefault();
-                    handleLogin();
+                    const email = document.getElementById('login-email').value;
+                    const pass = document.getElementById('login-password').value;
+                    handleLogin(email, pass);
                 });
             }
             if (state.screen === 'API_KEY') {

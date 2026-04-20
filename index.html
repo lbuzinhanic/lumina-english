@@ -84,7 +84,11 @@
                     <h2 id="header-title" class="hidden md:block text-lg font-bold text-gray-800">Dashboard</h2>
                 </div>
                 
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-4">
+                    <div id="streak-counter" class="flex items-center gap-2 px-4 py-2 bg-orange-50 rounded-2xl border border-orange-100">
+                        <i data-lucide="flame" class="text-orange-500 fill-orange-500" size="20"></i>
+                        <span id="streak-value" class="font-black text-orange-600">0</span>
+                    </div>
                     <button id="settings-button" class="p-2 rounded-full transition-colors hover:bg-gray-100 text-gray-400">
                         <i data-lucide="settings" size="20"></i>
                     </button>
@@ -129,7 +133,10 @@
                 name: '',
                 apiKey: '',
                 stats: null,
-                plan: null
+                plan: null,
+                streak: 0,
+                streakLastDate: null,
+                dailyHistory: {} // date string -> boolean
             },
             loading: false,
             diagnosticQuestions: [],
@@ -222,7 +229,7 @@
         // --- Navigation ---
         function showScreen(newScreen) {
             // Diagnostic Gating
-            const restrictedScreens = ['STUDY', 'PLAN'];
+            const restrictedScreens = ['STUDY', 'PLAN', 'DAILY_TASKS', 'TRAINING'];
             if (restrictedScreens.includes(newScreen) && !state.userData.diagnosticCompleted) {
                 state.screen = 'BLOCKED';
                 render();
@@ -233,10 +240,10 @@
             state.screen = newScreen;
             
             // Sync active tab
-            if (['DASHBOARD', 'DIAGNOSTIC', 'SETTINGS', 'PLAN'].includes(newScreen)) {
+            if (['DASHBOARD', 'DAILY_TASKS', 'PLAN', 'TRAINING', 'SETTINGS'].includes(newScreen)) {
                 state.activeTab = newScreen;
             } else if (newScreen === 'STUDY') {
-                state.activeTab = state.currentModule;
+                state.activeTab = 'TRAINING'; // Keep training active when inside a module
             }
             
             render();
@@ -373,6 +380,7 @@
                     
                     const responseText = await callGemini(prompt);
                     state.userData.stats = JSON.parse(responseText);
+                    state.userData.diagnosticCompleted = true;
                     saveData();
                     showScreen('DIAGNOSTIC_RESULTS');
                 } catch (err) {
@@ -468,6 +476,36 @@
             }
         }
 
+        function toggleDailyTask() {
+            const dateKey = new Date().toISOString().split('T')[0];
+            const isCurrentlyDone = !!state.userData.dailyHistory[dateKey];
+
+            if (!isCurrentlyDone) {
+                state.userData.dailyHistory[dateKey] = true;
+                
+                // Streak Logic
+                const lastDate = state.userData.streakLastDate;
+                const yesterday = new Date();
+                yesterday.setDate(yesterday.getDate() - 1);
+                const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+                if (lastDate === yesterdayStr) {
+                    state.userData.streak++;
+                } else if (!lastDate || lastDate !== dateKey) {
+                    state.userData.streak = 1;
+                }
+                
+                state.userData.streakLastDate = dateKey;
+            } else {
+                // If user unchecks (if we allow it, though the UI hides the checkbox once done)
+                delete state.userData.dailyHistory[dateKey];
+                // Note: Not resetting streak on uncheck for MVP sanity
+            }
+            
+            saveData();
+            render();
+        }
+
         // --- Persistence ---
         function saveData() {
             localStorage.setItem('lumina_vanilla_data', JSON.stringify(state.userData));
@@ -480,6 +518,23 @@
             
             if (saved) {
                 state.userData = JSON.parse(saved);
+                
+                // Initialize new fields
+                if (state.userData.streak === undefined) state.userData.streak = 0;
+                if (!state.userData.dailyHistory) state.userData.dailyHistory = {};
+
+                // Check Streak logic
+                const today = new Date().toISOString().split('T')[0];
+                const lastDate = state.userData.streakLastDate;
+
+                if (lastDate && lastDate !== today) {
+                    const lastDateObj = new Date(lastDate);
+                    const diff = Math.floor((new Date() - lastDateObj) / (1000 * 60 * 60 * 24));
+                    if (diff > 1) {
+                        state.userData.streak = 0; // Reset streak if missed more than 1 day
+                        saveData();
+                    }
+                }
             }
             
             state.isLoggedIn = loggedIn;
@@ -564,19 +619,22 @@
                 'SETTINGS': 'Configurações',
                 'STUDY': 'Estudo',
                 'DIAGNOSTIC': 'Diagnóstico',
-                'PLAN': 'Plano de Estudos'
+                'PLAN': 'Plano de Estudos',
+                'DAILY_TASKS': 'Estudos do Dia',
+                'TRAINING': 'Treinamento'
             }[state.screen] || '';
+
+            // Update Streak in Header
+            const streakVal = document.getElementById('streak-value');
+            if (streakVal) streakVal.innerText = state.userData.streak || 0;
 
             // Render Sidebar Items
             const navItems = document.getElementById('nav-items');
             const items = [
                 { id: 'DASHBOARD', label: 'Dashboard', icon: 'home' },
-                { id: 'DIAGNOSTIC', label: 'Diagnóstico', icon: 'clipboard-list', action: 'startDiagnostic()' },
+                { id: 'DAILY_TASKS', label: 'Hoje', icon: 'zap' },
                 { id: 'PLAN', label: 'Plano', icon: 'calendar', action: "showScreen('PLAN')" },
-                { id: 'reading', label: 'Leitura', icon: 'book-open', action: "startModule('reading')" },
-                { id: 'writing', label: 'Escrita', icon: 'pen-tool', action: "startModule('writing')" },
-                { id: 'listening', label: 'Audição', icon: 'headphones', action: "startModule('listening')" },
-                { id: 'speaking', label: 'Fala', icon: 'mic-2', action: "startModule('speaking')" },
+                { id: 'TRAINING', label: 'Treino', icon: 'target' },
             ];
 
             navItems.innerHTML = items.map(item => {
@@ -654,23 +712,44 @@
                                     <div>
                                         <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Dias por semana</label>
                                         <select name="days" class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg font-bold appearance-none">
+                                            <option value="1">1 dia</option>
+                                            <option value="2">2 dias</option>
                                             <option value="3">3 dias</option>
+                                            <option value="4">4 dias</option>
                                             <option value="5" selected>5 dias</option>
+                                            <option value="6">6 dias</option>
                                             <option value="7">Todos os dias</option>
                                         </select>
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Minutos por dia</label>
+                                        <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Tempo de estudo por dia</label>
                                         <select name="minutes" class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg font-bold appearance-none">
                                             <option value="15">15 min</option>
                                             <option value="30" selected>30 min</option>
+                                            <option value="45">45 min</option>
                                             <option value="60">60 min</option>
+                                            <option value="90">90 min</option>
+                                            <option value="120">2 horas</option>
                                         </select>
                                     </div>
                                 </div>
                                 <div>
                                     <label class="block text-sm font-black text-gray-400 uppercase tracking-widest mb-4">Qual seu objetivo principal?</label>
-                                    <input name="goal" required placeholder="Ex: Viagem, Fluência, Trabalho..." class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-xl font-bold">
+                                    <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                                        ${['Viagem', 'Fluência', 'Trabalho', 'Conteúdo', 'Negócios', 'Other'].map(obj => `
+                                            <label class="cursor-pointer group">
+                                                <input type="radio" name="goal" value="${obj}" class="hidden peer" required onchange="document.getElementById('custom-goal-container').classList.${obj === 'Other' ? 'remove' : 'add'}('hidden')">
+                                                <div class="p-6 h-full rounded-3xl border-2 border-gray-50 bg-gray-50 peer-checked:border-orange-500 peer-checked:bg-orange-50 transition-all text-center group-hover:bg-white shadow-sm flex flex-col items-center justify-center">
+                                                    <span class="text-3xl mb-2 block">${obj === 'Viagem' ? '✈️' : obj === 'Fluência' ? '🗣️' : obj === 'Trabalho' ? '💼' : obj === 'Conteúdo' ? '📺' : obj === 'Negócios' ? '🤝' : '➕'}</span>
+                                                    <span class="text-[10px] font-black uppercase tracking-widest text-gray-600 block">${obj === 'Other' ? 'Outro' : obj === 'Conteúdo' ? 'Conteúdo (TV/Música)' : obj}</span>
+                                                </div>
+                                            </label>
+                                        `).join('')}
+                                    </div>
+                                    <div id="custom-goal-container" class="hidden mt-6">
+                                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">Descreva seu objetivo específico</label>
+                                        <input name="custom_goal" placeholder="Ex: Passar em uma prova específica..." class="w-full p-6 rounded-3xl border border-gray-100 bg-gray-50 outline-none focus:ring-2 focus:ring-orange-500 text-lg font-bold">
+                                    </div>
                                 </div>
                                 <button type="submit" class="w-full bg-orange-500 text-white font-black py-7 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl shadow-orange-200 text-2xl uppercase tracking-[0.2em] active:scale-[0.98]">Finalizar e Começar</button>
                             </form>
@@ -705,49 +784,48 @@
                         html = `
                             <div class="flex flex-col md:flex-row gap-8">
                                 <div class="flex-1 space-y-8">
-                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                                        <h2 class="text-2xl font-black mb-8 flex items-center gap-3"><i data-lucide="calendar" class="text-orange-500" size="28"></i> Atividade de Hoje</h2>
-                                        <div class="bg-orange-50 border border-orange-100 p-5 rounded-3xl mb-8">
-                                            <p class="text-orange-800 font-medium mb-6 text-lg">Recomendamos focar em <span class="font-bold underline">${(state.userData.stats?.weaknesses?.[0] || 'Escrita').toLowerCase()}</span> hoje para equilibrar suas habilidades.</p>
-                                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                                                <button onclick="startModule('reading')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
-                                                    <i data-lucide="book-open" size="28" class="text-blue-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
-                                                    <span class="text-xs font-bold uppercase tracking-widest">Leitura</span>
-                                                </button>
-                                                <button onclick="startModule('writing')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
-                                                    <i data-lucide="pen-tool" size="28" class="text-purple-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
-                                                    <span class="text-xs font-bold uppercase tracking-widest">Escrita</span>
-                                                </button>
-                                                <button onclick="startModule('listening')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
-                                                    <i data-lucide="headphones" size="28" class="text-green-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
-                                                    <span class="text-xs font-bold uppercase tracking-widest">Audição</span>
-                                                </button>
-                                                <button onclick="startModule('speaking')" class="bg-white p-5 rounded-2xl border border-gray-100 hover:border-orange-500 transition-all text-center group shadow-sm">
-                                                    <i data-lucide="mic-2" size="28" class="text-red-500 mx-auto mb-3 group-hover:scale-110 transition-transform"></i>
-                                                    <span class="text-xs font-bold uppercase tracking-widest">Fala</span>
-                                                </button>
+                                    <div class="bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                        <div class="flex items-center justify-between mb-8">
+                                            <h2 class="text-2xl font-black flex items-center gap-3"><i data-lucide="zap" class="text-orange-500"></i> Resumo de Hoje</h2>
+                                            <button onclick="showScreen('DAILY_TASKS')" class="text-orange-500 font-bold text-sm hover:underline">Ver detalhes</button>
+                                        </div>
+                                        
+                                        <div class="bg-orange-50 border border-orange-100 p-8 rounded-[32px] flex flex-col md:flex-row items-center gap-8">
+                                            <div class="flex-1">
+                                                <h3 class="text-xl font-black text-orange-900 mb-2">Pronto para manter sua ofensiva?</h3>
+                                                <p class="text-orange-700 font-medium mb-6">Você tem atividades pendentes para hoje. Complete-as para não perder seu streak de ${state.userData.streak || 0} dias!</p>
+                                                <button onclick="showScreen('DAILY_TASKS')" class="bg-orange-500 text-white px-8 py-4 rounded-2xl font-black shadow-lg shadow-orange-200 hover:bg-orange-600 transition-all">Ir para Estudos do Dia</button>
+                                            </div>
+                                            <div class="w-32 h-32 bg-white rounded-full flex items-center justify-center shadow-inner border-4 border-orange-100">
+                                                <div class="text-center">
+                                                    <i data-lucide="flame" class="text-orange-500 mx-auto" size="32"></i>
+                                                    <div class="text-2xl font-black text-orange-600">${state.userData.streak || 0}</div>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                                        <h3 class="font-black text-xl mb-6">Seu Plano Semanal</h3>
-                                        <div class="space-y-4">
-                                            ${Object.entries(state.userData.plan?.schedule || {}).map(([day, activity]) => `
-                                                <div class="flex items-center gap-6 p-4 rounded-2xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
-                                                    <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center text-gray-400 font-black text-xs uppercase">${day.substring(0, 3)}</div>
-                                                    <p class="text-gray-600 font-medium">${activity}</p>
-                                                </div>
-                                            `).join('')}
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                        <div class="bg-white p-8 rounded-[40px] shadow-xl border border-gray-50 hover:border-blue-500 transition-all cursor-pointer group" onclick="showScreen('TRAINING')">
+                                            <div class="w-14 h-14 bg-blue-100 text-blue-500 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform"><i data-lucide="target"></i></div>
+                                            <h3 class="text-xl font-black mb-2">Treinamento Livre</h3>
+                                            <p class="text-gray-400 text-sm font-medium">Pratique leitura, escrita ou conversação a qualquer momento.</p>
+                                        </div>
+                                        <div class="bg-white p-8 rounded-[40px] shadow-xl border border-gray-50 hover:border-purple-500 transition-all cursor-pointer group" onclick="showScreen('PLAN')">
+                                            <div class="w-14 h-14 bg-purple-100 text-purple-500 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform"><i data-lucide="calendar"></i></div>
+                                            <h3 class="text-xl font-black mb-2">Plano de Estudos</h3>
+                                            <p class="text-gray-400 text-sm font-medium">Visualize sua programação semanal e resultados do diagnóstico.</p>
                                         </div>
                                     </div>
                                 </div>
+
                                 <div class="w-full md:w-80 space-y-8">
-                                    <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
+                                    <div class="bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50 text-center">
                                         <div class="w-28 h-28 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-white shadow-inner">
                                             <span class="text-xl font-black text-orange-500 leading-tight px-2">${getLevelLabel(state.userData.stats?.overall)}</span>
                                         </div>
                                         <h3 class="font-black text-xl mb-1">Nível Geral</h3>
-                                        <p class="text-gray-400 text-xs font-bold uppercase tracking-widest mb-8">Escala Descritiva</p>
+                                        <p class="text-gray-400 text-xs font-bold uppercase tracking-widest mb-8">Baseado no Diagnóstico</p>
                                         <div class="space-y-6 text-left">
                                             ${['reading', 'writing', 'listening', 'speaking'].map(skill => `
                                                 <div class="space-y-2">
@@ -770,11 +848,17 @@
                 case 'PLAN':
                     html = `
                         <div class="max-w-3xl mx-auto space-y-8">
-                            <div class="bg-white p-5 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
-                                <h2 class="text-2xl font-black mb-8 flex items-center gap-3"><i data-lucide="calendar" class="text-orange-500" size="28"></i> Seu Plano de Estudos</h2>
-                                <div class="space-y-6">
+                            <div class="bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+                                    <h2 class="text-2xl font-black flex items-center gap-3"><i data-lucide="calendar" class="text-orange-500" size="28"></i> Seu Plano Semanal</h2>
+                                    <div class="flex gap-2">
+                                        <button onclick="showScreen('DIAGNOSTIC_RESULTS')" class="px-5 py-3 rounded-2xl bg-orange-50 text-orange-600 font-bold text-sm hover:bg-orange-100 transition-all">Ver meu Diagnóstico</button>
+                                        <button onclick="startDiagnostic()" class="px-5 py-3 rounded-2xl border-2 border-gray-100 text-gray-400 font-bold text-sm hover:border-orange-500 hover:text-orange-500 transition-all">Refazer Diagnóstico</button>
+                                    </div>
+                                </div>
+                                <div class="space-y-4">
                                     ${Object.entries(state.userData.plan?.schedule || {}).map(([day, activity]) => `
-                                        <div class="flex items-center gap-6 p-6 rounded-3xl bg-gray-50 border border-gray-100 hover:border-orange-200 transition-all group">
+                                        <div class="flex items-center gap-6 p-6 rounded-3xl bg-gray-50 border border-gray-100 group">
                                             <div class="w-16 h-16 bg-white rounded-2xl flex items-center justify-center text-orange-500 font-black text-sm shadow-sm group-hover:bg-orange-500 group-hover:text-white transition-all">${day.substring(0, 3).toUpperCase()}</div>
                                             <div>
                                                 <h4 class="font-black text-gray-800 text-lg">${day}</h4>
@@ -783,6 +867,86 @@
                                         </div>
                                     `).join('')}
                                 </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'DAILY_TASKS':
+                    const today = new Date().toLocaleDateString('pt-BR', { weekday: 'long' });
+                    const todayCaps = today.charAt(0).toUpperCase() + today.slice(1);
+                    const activityToday = state.userData.plan?.schedule?.[todayCaps] || "Hoje é dia de descanso ou revisão livre.";
+                    const dateKey = new Date().toISOString().split('T')[0];
+                    const isDoneToday = state.userData.dailyHistory?.[dateKey];
+
+                    html = `
+                        <div class="max-w-2xl mx-auto space-y-8">
+                            <!-- Streak Banner -->
+                            <div class="bg-gradient-to-r from-orange-500 to-red-600 p-8 rounded-[40px] shadow-2xl shadow-orange-200 text-white flex items-center justify-between overflow-hidden relative group">
+                                <div class="relative z-10">
+                                    <h3 class="text-4xl font-black mb-1">${state.userData.streak || 0} dias de foco!</h3>
+                                    <p class="opacity-80 font-bold">Mantenha sua chama acesa.</p>
+                                </div>
+                                <i data-lucide="flame" class="w-24 h-24 absolute -right-4 -bottom-4 opacity-20 rotate-12 group-hover:scale-125 transition-transform duration-500"></i>
+                            </div>
+
+                            <div class="bg-white p-8 rounded-[40px] shadow-2xl shadow-gray-100 border border-gray-50">
+                                <div class="flex items-center gap-4 mb-8">
+                                    <div class="p-4 bg-orange-100 text-orange-600 rounded-2xl"><i data-lucide="star"></i></div>
+                                    <div>
+                                        <h2 class="text-2xl font-black capitalize">Atividades de ${today}</h2>
+                                        <p class="text-gray-400 font-bold text-xs uppercase tracking-widest">Siga seu plano diário</p>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-6">
+                                    <div class="p-8 rounded-3xl bg-gray-50 border-2 ${isDoneToday ? 'border-green-500 bg-green-50/30' : 'border-gray-100'} transition-all flex items-start gap-6">
+                                        <button onclick="toggleDailyTask()" class="w-10 h-10 rounded-xl border-4 flex items-center justify-center transition-all ${isDoneToday ? 'bg-green-500 border-green-500 text-white' : 'border-gray-200 bg-white hover:border-orange-500'}">
+                                            ${isDoneToday ? '<i data-lucide="check" size="24"></i>' : ''}
+                                        </button>
+                                        <div class="flex-1">
+                                            <h4 class="text-xl font-black ${isDoneToday ? 'text-green-800 line-through' : 'text-gray-800'}">${activityToday}</h4>
+                                            <p class="text-gray-500 font-medium mt-1">Concluir este estudo garante sua ofensiva diária.</p>
+                                        </div>
+                                    </div>
+                                    
+                                    ${isDoneToday ? `
+                                        <div class="bg-green-50 border border-green-100 p-6 rounded-3xl flex items-center gap-4 text-green-700 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                            <i data-lucide="party-popper"></i>
+                                            <p class="font-bold">Parabéns! Meta de hoje cumprida. Volte amanhã!</p>
+                                        </div>
+                                    ` : `
+                                        <p class="text-center text-gray-400 text-sm font-medium italic">Clique na caixa para marcar como concluído.</p>
+                                    `}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'TRAINING':
+                    const modules = [
+                        { id: 'reading', label: 'Leitura', icon: 'book-open', color: 'blue', desc: 'Melhore seu vocabulário e compreensão textual.' },
+                        { id: 'writing', label: 'Escrita', icon: 'pen-tool', color: 'purple', desc: 'Pratique gramática e expressão escrita.' },
+                        { id: 'listening', label: 'Audição', icon: 'headphones', color: 'green', desc: 'Treine seu ouvido para diálogos reais.' },
+                        { id: 'speaking', label: 'Conversação', icon: 'mic-2', color: 'red', desc: 'Sua vez de falar! Pratique pronúncia e fala.' }
+                    ];
+                    html = `
+                        <div class="max-w-4xl mx-auto space-y-8">
+                            <div class="text-center mb-10">
+                                <h2 class="text-4xl font-black text-gray-900 mb-2">Treinamento Livre</h2>
+                                <p class="text-gray-500 text-lg">Pratique o quanto quiser, sem limites.</p>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                ${modules.map(m => `
+                                    <button onclick="startModule('${m.id}')" class="bg-white p-8 rounded-[40px] shadow-xl border border-gray-50 hover:border-orange-500 transition-all text-left flex items-start gap-6 group">
+                                        <div class="w-16 h-16 bg-${m.color}-100 text-${m.color}-500 rounded-3xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
+                                            <i data-lucide="${m.icon}" size="32"></i>
+                                        </div>
+                                        <div>
+                                            <h3 class="text-xl font-black text-gray-800 mb-1">${m.label}</h3>
+                                            <p class="text-gray-500 text-sm leading-relaxed">${m.desc}</p>
+                                        </div>
+                                    </button>
+                                `).join('')}
                             </div>
                         </div>
                     `;
@@ -866,12 +1030,31 @@
                                             <i data-lucide="${state.currentModule === 'reading' ? 'book-open' : state.currentModule === 'writing' ? 'pen-tool' : state.currentModule === 'listening' ? 'headphones' : 'mic-2'}" size="28"></i>
                                         </div>
                                         <div>
-                                            <h2 class="text-2xl font-black capitalize">${state.currentModule === 'reading' ? 'Leitura' : state.currentModule === 'writing' ? 'Escrita' : state.currentModule === 'listening' ? 'Audição' : 'Fala'}</h2>
+                                            <h2 class="text-2xl font-black capitalize">${state.currentModule === 'reading' ? 'Leitura' : state.currentModule === 'writing' ? 'Escrita' : state.currentModule === 'listening' ? 'Audição' : 'Conversação'}</h2>
                                             <p class="text-xs text-gray-400 uppercase font-black tracking-widest">${getLevelLabel(state.userData.stats?.overall)}</p>
                                         </div>
                                     </div>
                                     ${!state.feedback ? renderModuleContent() : renderFeedback()}
                                 `}
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'BLOCKED':
+                    html = `
+                        <div class="max-w-2xl mx-auto">
+                            <div class="bg-white p-12 rounded-[50px] shadow-2xl text-center space-y-8 border border-orange-50">
+                                <div class="w-24 h-24 bg-orange-100 text-orange-500 rounded-[32px] flex items-center justify-center mx-auto shadow-lg shadow-orange-50 border-4 border-white">
+                                    <i data-lucide="lock" size="48"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-3xl font-black mb-3">Conteúdo Bloqueado</h2>
+                                    <p class="text-gray-500 text-lg leading-relaxed px-4">Você precisa completar o <strong>Diagnóstico Inicial</strong> para que possamos liberar seu plano de estudos personalizado.</p>
+                                </div>
+                                <button onclick="startDiagnostic()" class="w-full bg-orange-500 text-white font-black py-6 rounded-[32px] hover:bg-orange-600 transition-all shadow-2xl flex items-center justify-center gap-4 text-xl">
+                                    Fazer Diagnóstico Agora <i data-lucide="chevron-right" size="24"></i>
+                                </button>
+                                <button onclick="showScreen('DASHBOARD')" class="text-gray-400 font-bold hover:text-gray-600 transition-colors uppercase tracking-widest text-xs">Voltar ao Início</button>
                             </div>
                         </div>
                     `;
@@ -949,11 +1132,15 @@
                 document.getElementById('onboarding-form').addEventListener('submit', (e) => {
                     e.preventDefault();
                     const formData = new FormData(e.target);
+                    let goal = formData.get('goal');
+                    if (goal === 'Other') {
+                        goal = formData.get('custom_goal') || 'Outro';
+                    }
                     handleOnboardingSubmit({
                         name: formData.get('name'),
                         days: formData.get('days'),
                         minutes: formData.get('minutes'),
-                        goal: formData.get('goal')
+                        goal: goal
                     });
                 });
             }
@@ -1081,12 +1268,17 @@
         }
 
         // --- Global Listeners ---
+        window.state = state;
+        window.saveData = saveData;
+        window.render = render;
         window.showScreen = showScreen;
         window.goBack = goBack;
         window.startDiagnostic = startDiagnostic;
         window.submitDiagnosticAnswer = submitDiagnosticAnswer;
         window.startModule = startModule;
         window.submitModuleResponse = submitModuleResponse;
+        window.handleLogout = handleLogout;
+        window.toggleDailyTask = toggleDailyTask;
         window.setActiveTab = (tab) => { state.activeTab = tab; render(); };
 
         document.getElementById('back-button').addEventListener('click', goBack);
